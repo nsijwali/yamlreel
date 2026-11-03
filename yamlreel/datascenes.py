@@ -14,7 +14,7 @@ from typing import Any, ClassVar
 from PIL import Image, ImageDraw
 
 from .scenebase import Ctx, Scene, _appear
-from .textkit import TextBlock, blit, ease, ease_out, lerp_color, make_block
+from .textkit import MAX_COUNT_DECIMALS, TextBlock, blit, ease, ease_out, lerp_color, make_block
 from .theme import font
 
 MAX_TABLE_ROWS = 12
@@ -31,6 +31,7 @@ SCAN_PER_ROW = 0.3
 COUNTER_SECONDS = 2.0
 ARRAY_STAGGER = 0.8       # seconds between array steps that have no `at`; the first one is at ARRAY_STAGGER
 MOVE_SECONDS = 0.4        # how long cells take to move into their new places
+GHOST_SECONDS = MOVE_SECONDS / 1.3   # a cell that left has faded out by then
 ARRAY_ACTIONS = ("insert", "push", "pop", "mark", "unmark", "window")
 POP_SIDES = ("front", "back")
 
@@ -169,8 +170,24 @@ def _clamp_window(window: tuple[int, int] | None, n: int) -> tuple[int, int] | N
 
 # --- shared drawing helpers -----------------------------------------------------------------------------
 
+def fill_margin(ctx: Ctx) -> int:
+    """Side margin of a data scene. Vertical frames are read on phones, so the content takes 90% of the width."""
+    return int(ctx.W * (0.05 if ctx.vertical else 0.08))
+
+
+def centre_y(ctx: Ctx) -> float:
+    """Where a data scene centres itself vertically: the middle of the frame above the caption zone."""
+    return ctx.H * (0.46 if ctx.vertical else 0.45)
+
+
 def _color(ctx: Ctx, name: str) -> tuple[int, int, int]:
     return getattr(ctx.theme, name)
+
+
+def decimals_of(value: float) -> int:
+    """Decimals needed to write `value` exactly (at most MAX_COUNT_DECIMALS): 12 -> 0, 0.5 -> 1, 3.141 -> 3."""
+    text = f"{value:.{MAX_COUNT_DECIMALS}f}".rstrip("0")
+    return len(text.split(".")[1]) if "." in text else 0
 
 
 def _number_text(value: float, decimals: int) -> str:
@@ -213,6 +230,7 @@ class TableScene(Scene):
         super().__init__(spec, ctx)
         u, th = ctx.u, ctx.theme
         W, H = ctx.W, ctx.H
+        margin = fill_margin(ctx)
         self.columns = [str(x) for x in spec["columns"]]
         self.rows = [[str(x) for x in r] for r in spec["rows"]]
         n, ncols = len(self.rows), len(self.columns)
@@ -234,12 +252,12 @@ class TableScene(Scene):
         self.counter: dict[str, Any] | None = None
         if counter is not None:
             to = float(counter["to"])
-            self.counter = {"to": to, "decimals": 0 if to == int(to) else 2, "label": str(counter.get("label", "")),
+            self.counter = {"to": to, "decimals": decimals_of(to), "label": str(counter.get("label", "")),
                             "at": float(counter.get("at", self.scan["at"] if self.scan else FIRST_ROW_AT)),
                             "seconds": float(counter.get("seconds", COUNTER_SECONDS))}
 
         # --- layout: pick the largest text size at which the table fits its area
-        avail_w = W - 2 * ctx.margin
+        avail_w = W - 2 * margin
         self.head = (ctx.block(str(spec["title"]).upper(), "sans_bold", 30 * u, avail_w, tracking=6 * u)
                      if spec.get("title") else None)
         head_h = self.head.height + 34 * u if self.head else 0.0
@@ -261,14 +279,18 @@ class TableScene(Scene):
             self._cnt_cache = _BlockCache(self.COUNTER_CACHE)
         area_h = H * (0.60 if ctx.vertical else 0.66) - head_h - (counter_h + 34 * u if ctx.vertical and self.counter else 0)
         tag_size_k = 0.72
+
+        def tag_block(text: str, base: float) -> TextBlock:
+            # one line, shrunk when it is wider than a third of the table
+            return make_block(text, "sans_bold", base * tag_size_k, table_w * 0.3, max_h=base * tag_size_k * 1.3,
+                              min_size=10)
         kinds = ("sans_bold", ctx.body)
-        size = 40 * u * ctx.fs
+        size = (60 if ctx.vertical else 40) * u * ctx.fs  # the loop shrinks it until the table fits
         floor = max(12.0, 14 * u)
         while True:
             pad_x = size * 0.55
-            row_h = size * 1.75
-            tags = [make_block(h["text"], "sans_bold", size * tag_size_k, table_w * 0.3, min_size=size * tag_size_k)
-                    for h in self.highlights if h["text"]]
+            row_h = size * (2.2 if ctx.vertical else 1.75)
+            tags = [tag_block(h["text"], size) for h in self.highlights if h["text"]]
             tag_w = (max(b.width for b in tags) + 2 * pad_x) if tags else 0.0
             natural = []
             for j in range(ncols):
@@ -279,7 +301,8 @@ class TableScene(Scene):
             card_pad = row_h * 0.3
             need_w = sum(natural) + tag_w
             need_h = row_h * (n + 1) + 2 * card_pad
-            if (need_w <= table_w and need_h <= area_h) or size <= floor:
+            tags_fit = all(b.height <= row_h * 0.9 for b in tags)  # a tag sits inside its row
+            if (need_w <= table_w and need_h <= area_h and tags_fit) or size <= floor:
                 break
             size -= 2
         self.size = size
@@ -290,17 +313,17 @@ class TableScene(Scene):
         self.pad_x, self.row_h, self.tag_w, self.card_pad = pad_x, row_h, tag_w, card_pad
         card_h = need_h
         total_h = head_h + card_h + (counter_h + 34 * u if ctx.vertical and self.counter else 0.0)
-        top = max(H * 0.05, ctx.cy - total_h / 2)
-        self.head_xy = (ctx.margin, top)
+        top = max(H * 0.05, centre_y(ctx) - total_h / 2)
+        self.head_xy = (margin, top)
         cy0 = top + head_h
-        self.card = (ctx.margin, cy0, ctx.margin + table_w, cy0 + card_h)
+        self.card = (margin, cy0, margin + table_w, cy0 + card_h)
         self.header_y = cy0 + card_pad
         self.rows_y0 = self.header_y + row_h
-        self.col_x = [ctx.margin]
+        self.col_x = [margin]
         for w in self.col_w[:-1]:
             self.col_x.append(self.col_x[-1] + w)
         if side_counter:
-            self.cnt_xy = (ctx.margin + table_w + gap + counter_w / 2, cy0 + card_h / 2 - counter_h / 2)
+            self.cnt_xy = (margin + table_w + gap + counter_w / 2, cy0 + card_h / 2 - counter_h / 2)
         elif self.counter is not None:
             self.cnt_xy = (W / 2, cy0 + card_h + 34 * u)
 
@@ -316,8 +339,8 @@ class TableScene(Scene):
 
         self.head_cells = [cell(t, kinds[0], j) for j, t in enumerate(self.columns)]
         self.cells = [[cell(t, kinds[1], j) for j, t in enumerate(r)] for r in self.rows]
-        self.tags = {id(h): make_block(h["text"], "sans_bold", size * tag_size_k, table_w * 0.3, min_size=size * tag_size_k)
-                     for h in self.highlights if h["text"]}
+        self.tags = {id(h): tag_block(h["text"], size) for h in self.highlights if h["text"]}
+        shrunk += [b.size for b in self.tags.values() if b.shrunk]
         if shrunk:
             ctx.warn(f"table text shrunk to fit in {len(shrunk)} cells (down to {min(shrunk)}px)")
 
@@ -452,16 +475,20 @@ class ArrayScene(Scene):
         super().__init__(spec, ctx)
         u, th = ctx.u, ctx.theme
         W, H = ctx.W, ctx.H
+        margin = fill_margin(ctx)
         self.states = array_states(spec)
         self.times = [s.t for s in self.states]
         self.n_start = len(spec.get("items") or [])
+        self.born = {s.added: s.t for s in self.states if s.added is not None}  # when each new cell was added
+        self._starts: dict[int, dict[int, tuple[float, float]]] = {}
+        self._ghost_memo: dict[int, list[tuple[int, float, float, str]]] = {}
         self.maxn = max(1, max(len(s.cells) for s in self.states))
         pad = 28 * u
-        inner_w = W - 2 * ctx.margin - 2 * pad
-        self.pitch = min(inner_w / self.maxn, 300 * u)
+        inner_w = W - 2 * margin - 2 * pad
+        self.pitch = min(inner_w / self.maxn, (330 if ctx.vertical else 300) * u)
         self.cell_w = self.pitch * 0.84
-        self.cell_h = min(self.cell_w * 0.8, 200 * u)
-        size = min(self.cell_h * 0.38, 64 * u * ctx.fs)
+        self.cell_h = min(self.cell_w * (1.35 if ctx.vertical else 0.8), (420 if ctx.vertical else 200) * u)
+        size = min(self.cell_h * (0.3 if ctx.vertical else 0.38), (110 if ctx.vertical else 64) * u * ctx.fs)
         shrunk: list[int] = []
         self.blocks: dict[int, TextBlock] = {}
         for s in self.states:
@@ -478,7 +505,7 @@ class ArrayScene(Scene):
         if smallest < MIN_READABLE * u:
             ctx.warn(f"array text is small ({smallest}px); use fewer cells or shorter text")
         self.idx_blocks = [make_block(str(i), "mono", 28 * u * ctx.fs, 120 * u, min_size=10) for i in range(self.maxn)]
-        self.title = (ctx.block(str(spec["title"]), ctx.display, 56 * u * ctx.fs, W - 2 * ctx.margin, align="center")
+        self.title = (ctx.block(str(spec["title"]), ctx.display, 56 * u * ctx.fs, W - 2 * margin, align="center")
                       if spec.get("title") else None)
         self.tag_blocks: dict[tuple[str, str], TextBlock] = {}
         for s in self.states:
@@ -489,9 +516,9 @@ class ArrayScene(Scene):
         title_h = self.title.height + 36 * u if self.title else 0.0
         zone_top, zone_bot = 96 * u * ctx.fs, 110 * u * ctx.fs
         total = title_h + zone_top + self.cell_h + 2 * pad + zone_bot
-        top = max(H * 0.05, ctx.cy - total / 2)
+        top = max(H * 0.05, centre_y(ctx) - total / 2)
         self.title_xy = (W / 2, top)
-        self.card = (ctx.margin, top + title_h + zone_top, W - ctx.margin, top + title_h + zone_top + self.cell_h + 2 * pad)
+        self.card = (margin, top + title_h + zone_top, W - margin, top + title_h + zone_top + self.cell_h + 2 * pad)
         self.cell_cy = self.card[1] + pad + self.cell_h / 2
         self.pad = pad
         if self.states[-1].t + MOVE_SECONDS > self.duration:
@@ -507,35 +534,70 @@ class ArrayScene(Scene):
         """Index of the state in force at scene time t."""
         return max(0, bisect.bisect_right(self.times, t) - 1)
 
-    def cell_positions(self, t: float) -> dict[int, tuple[float, float, float]]:
-        """{cell id: (centre x, y offset, opacity)} for every cell drawn at t, including one that is leaving."""
-        si = self.state_at(t)
+    def _start(self, si: int) -> dict[int, tuple[float, float]]:
+        """{cell id: (centre x, mark alpha)} where each cell is drawn at the moment state `si` begins. When steps
+        come closer together than MOVE_SECONDS the cells are still moving then, and the next move starts from
+        there, so nothing jumps. Memoised per state."""
+        got = self._starts.get(si)
+        if got is not None:
+            return got
+        out: dict[int, tuple[float, float]] = {}
+        if si > 0:
+            cur, prev = self.states[si], self.states[si - 1]
+            drawn = self._drawn(si - 1, cur.t)
+            n_prev = len(prev.cells)
+            for i, cell in enumerate(cur.cells):
+                known = drawn.get(cell.id)
+                out[cell.id] = (known[0], known[3]) if known else (self.slot_x(i, n_prev), 0.0)
+            if cur.removed is not None and cur.removed.id in drawn:
+                out[cur.removed.id] = (drawn[cur.removed.id][0], 0.0)
+        self._starts[si] = out
+        return out
+
+    def _ghosts(self, si: int) -> list[tuple[int, float, float, str]]:
+        """Cells that left, still fading when state `si` begins: (id, x where it left, time it left, side)."""
+        got = self._ghost_memo.get(si)
+        if got is not None:
+            return got
+        out: list[tuple[int, float, float, str]] = []
+        if si > 0:
+            cur = self.states[si]
+            out = [g for g in self._ghosts(si - 1) if cur.t - g[2] < GHOST_SECONDS]
+            if cur.removed is not None:
+                out.append((cur.removed.id, self._start(si)[cur.removed.id][0], cur.t, str(cur.side)))
+        self._ghost_memo[si] = out
+        return out
+
+    def _drawn(self, si: int, t: float) -> dict[int, tuple[float, float, float, float]]:
+        """{cell id: (centre x, y offset, opacity, mark opacity)} for the cells of state `si` at time t."""
         cur = self.states[si]
-        prev = self.states[si - 1] if si > 0 else None
+        start = self._start(si)
         p = (t - cur.t) / MOVE_SECONDS if si > 0 else 1.0
-        e = ease("in_out", p)
-        n_prev = len(prev.cells) if prev else len(cur.cells)
-        n_eff = n_prev + (len(cur.cells) - n_prev) * e
-        before = {c.id: i for i, c in enumerate(prev.cells)} if prev else {}
-        out: dict[int, tuple[float, float, float]] = {}
+        e, eo = ease("in_out", p), ease_out(p)
+        n = len(cur.cells)
+        out: dict[int, tuple[float, float, float, float]] = {}
         for i, cell in enumerate(cur.cells):
-            intro = 1.0 if cell.id >= self.n_start else _appear(t, 0.1 + cell.id * 0.06, 0.4)
-            if cell.id in before:
-                idx = before[cell.id] + (i - before[cell.id]) * e
-                out[cell.id] = (self.slot_x(idx, n_eff), 0.0, intro)
-            elif prev is not None:  # a new cell drops in from above and settles
-                drop = (1 - ease("back", p)) * self.cell_h * 1.0
-                out[cell.id] = (self.slot_x(i, n_eff), -drop, min(1.0, p * 2.5))
-            else:
-                out[cell.id] = (self.slot_x(i, n_eff), 0.0, intro)
-        if prev is not None and cur.removed is not None:  # the cell that left drifts off its end and fades
-            gone = cur.removed
-            idx = before[gone.id]
-            sign = -1.0 if cur.side == "front" else 1.0
-            alpha = max(0.0, 1.0 - p * 1.3)
+            tx = self.slot_x(i, n)
+            marked = 1.0 if cell.id in cur.marks else 0.0
+            sx, sm = start.get(cell.id, (tx, marked))
+            x, ma = sx + (tx - sx) * e, sm + (marked - sm) * eo
+            if cell.id < self.n_start:
+                out[cell.id] = (x, 0.0, _appear(t, 0.1 + cell.id * 0.06, 0.4), ma)
+            else:  # a new cell drops in from above and settles, whichever later steps come meanwhile
+                pb = (t - self.born[cell.id]) / MOVE_SECONDS
+                out[cell.id] = (x, -(1 - ease("back", pb)) * self.cell_h, min(1.0, max(0.0, pb) * 2.5), ma)
+        return out
+
+    def cell_positions(self, t: float) -> dict[int, tuple[float, float, float]]:
+        """{cell id: (centre x, y offset, opacity)} for every cell drawn at t, including cells that are leaving."""
+        si = self.state_at(t)
+        out = {cid: v[:3] for cid, v in self._drawn(si, t).items()}
+        for cid, gx, t0, side in self._ghosts(si):
+            pp = (t - t0) / MOVE_SECONDS
+            alpha = 1.0 - pp * 1.3
             if alpha > 0:
-                out[gone.id] = (self.slot_x(idx, n_eff) + sign * self.pitch * 0.9 * ease("out", p),
-                                -self.cell_h * 0.35 * ease("out", p), alpha)
+                sign = -1.0 if side == "front" else 1.0
+                out[cid] = (gx + sign * self.pitch * 0.9 * ease("out", pp), -self.cell_h * 0.35 * ease("out", pp), alpha)
         return out
 
     def _draw_static(self, img: Image.Image) -> None:
@@ -558,8 +620,7 @@ class ArrayScene(Scene):
         n_prev = len(prev.cells) if prev else len(cur.cells)
         n_eff = n_prev + (len(cur.cells) - n_prev) * e
         pos = self.cell_positions(t)
-        marked = set(cur.marks)
-        mark_a = ease_out(p) if prev is not None and prev.marks != cur.marks else 1.0
+        mark_a = {cid: v[3] for cid, v in self._drawn(si, t).items()}  # per cell: only cells whose mark changed fade
         card_c = th.card
         base_fill = lerp_color(th.card, th.fg, 0.07)
         cw, ch = self.cell_w, self.cell_h
@@ -567,13 +628,13 @@ class ArrayScene(Scene):
             if a <= 0:
                 continue
             y = self.cell_cy + dy
-            is_marked = cid in marked
-            mc = _color(c, cur.mark_color)
-            fill = lerp_color(base_fill, mc, 0.25 * mark_a) if is_marked else base_fill
-            outline = lerp_color(th.line, mc, mark_a) if is_marked else th.line
+            m = mark_a.get(cid, 0.0)
+            mc = _color(c, cur.mark_color if cid in cur.marks or prev is None else prev.mark_color)
+            fill = lerp_color(base_fill, mc, 0.25 * m)
+            outline = lerp_color(th.line, mc, m)
             d.rounded_rectangle([x - cw / 2, y - ch / 2, x + cw / 2, y + ch / 2], int(14 * u),
                                 fill=lerp_color(card_c, fill, a), outline=lerp_color(card_c, outline, a),
-                                width=max(2, int((5 if is_marked else 3) * u)))
+                                width=max(2, int((3 + 2 * m) * u)))
             blk = self.blocks[cid]
             blit(img, blk, (x, y), th.fg, a, "mc")
         # index numbers under the slots
@@ -582,12 +643,14 @@ class ArrayScene(Scene):
             a = 1.0 if i < min(len(cur.cells), n_prev) else (e if i < len(cur.cells) else 1.0 - e)
             if a > 0:
                 blit(img, self.idx_blocks[i], (self.slot_x(i, n_eff), self.card[3] + 8 * u), th.muted, a, "tc")
-        # mark label under the index row
-        if marked and cur.mark_text:
-            xs = [pos[m][0] for m in cur.marks if m in pos]
-            if xs:
-                blit(img, self.tag_blocks[("mark", cur.mark_text)], (sum(xs) / len(xs), self.card[3] + 50 * u * c.fs),
-                     _color(c, cur.mark_color), mark_a, "tc")
+        # mark label under the index row; after an unmark it fades out with the marks it belonged to
+        label = cur if cur.marks else (prev if prev is not None and prev.marks else None)
+        if label is not None and label.mark_text:
+            ids = [m for m in label.marks if m in pos]
+            if ids:
+                alpha = max(mark_a.get(m, 0.0) for m in ids)
+                blit(img, self.tag_blocks[("mark", label.mark_text)], (sum(pos[m][0] for m in ids) / len(ids),
+                     self.card[3] + 50 * u * c.fs), _color(c, label.mark_color), alpha, "tc")
         # window bracket over the cells
         if cur.window is not None:
             lo, hi = cur.window

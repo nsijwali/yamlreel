@@ -301,7 +301,7 @@ in, not as a path.
 | `stat.count`, `bullets.stagger` | `StatScene.FIELDS`, `BulletsScene.FIELDS` |
 | New types `table`, `array`, `cta`, `tree`, `meter`, `timeline` | `SCENE_TYPES`, `REQUIRED`, `DEFAULT_SECONDS`, nested `*_FIELDS` |
 | New limits (`specs.py`) | `MAX_TABLE_ROWS=12`, `MAX_TABLE_COLS=6`, `MAX_CELLS=12`, `MAX_STEPS=40`, `MAX_TREE_NODES=31`, `MAX_EVENTS=60`, `MAX_WORDS_ENTRIES=2000` |
-| Outputs | `<fmt>/subtitles.srt` (when `subtitles.srt`); `--contact-frames N` (2..8) stills per scene |
+| Outputs | `<fmt>/subtitles.srt` (when `subtitles.srt`); `--contact-frames N` (1..8) stills per scene |
 
 ## 4. Alternatives considered
 

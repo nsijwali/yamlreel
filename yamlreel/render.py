@@ -112,6 +112,7 @@ class Timeline:
                               f"scene ({sc.duration:.2f}s); shortened to fit")
                 tr["seconds"] = sc.duration
         self._caps = {i: make_caption(self.ctx, sc.caption) for i, sc in enumerate(self.scenes) if sc.caption}
+        self._current = -1  # the scene frame_at last drew; scenes far from it give their cached layers back
         self._last: dict[int, Image.Image] = {}  # at most one entry: the last frame of the scene before this one
         self._wm = self._make_watermark(spec.get("watermark"))
 
@@ -183,6 +184,11 @@ class Timeline:
 
     def frame_at(self, t: float) -> Image.Image:
         i, lt = self.locate(t)
+        if i != self._current:  # only scene i and the one before it (for the transition) can be drawn next
+            self._current = i
+            for k, other in enumerate(self.scenes):
+                if k != i and k != i - 1:
+                    other.release()
         img = self._scene_frame(i, lt)
         tr = self._transitions[i]
         if i > 0 and tr["type"] != "cut" and lt < tr["seconds"]:

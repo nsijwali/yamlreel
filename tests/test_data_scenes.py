@@ -100,7 +100,11 @@ def before_at(sc, t, row):
 
 def test_highlight_tints_its_row_from_its_time(tmp_path):
     _, sc = table(tmp_path, highlight=[{"row": 6, "at": 4.0, "text": "hit", "color": "accent2"}])
-    assert before_at(sc, 3.9, 6) != before_at(sc, 4.6, 6)
+    a, b = before_at(sc, 3.9, 6)[:3], before_at(sc, 4.6, 6)[:3]
+    accent2, card = sc.ctx.theme.accent2, sc.ctx.theme.card
+    dist = lambda p, q: sum((x - y) ** 2 for x, y in zip(p, q))
+    assert dist(b, accent2) < dist(a, accent2)  # the row moved towards accent2 ...
+    assert dist(b, card) > dist(a, card)  # ... and away from the plain card colour
 
 
 def test_counter_reaches_its_target_exactly(tmp_path):
@@ -388,3 +392,108 @@ def test_voice_reads_the_title_of_a_data_scene():
     from yamlreel.voice import screen_text
     assert "users" in screen_text({"type": "table", "title": "users"})
     assert "idx" in screen_text({"type": "array", "title": "idx"})
+
+
+# --- review fixes ---------------------------------------------------------------------------------------
+
+def test_the_static_layer_is_a_copy_and_drawing_on_it_does_not_leak(tmp_path):
+    _, sc = table(tmp_path)
+    sc.frame(5.0)  # draws rows, a scan bar and a highlight over the cached layer
+    again = sc.frame(0.0)
+    _, fresh = table(tmp_path)
+    assert again.tobytes() == fresh.frame(0.0).tobytes()
+
+
+def test_release_frees_layers_and_the_scene_still_draws(tmp_path):
+    _, sc = table(tmp_path)
+    first = sc.frame(2.0).tobytes()
+    assert sc.cached_layers() == 1
+    sc.release()
+    assert sc.cached_layers() == 0
+    assert sc.frame(2.0).tobytes() == first and sc.cached_layers() == 1
+
+
+def test_a_long_reel_holds_at_most_two_cached_layers(tmp_path):
+    scenes = [{**TABLE, "seconds": 2}, {**ARRAY, "seconds": 2}] * 6
+    tl = Timeline(validate({"scenes": scenes}), "landscape", tmp_path, scale=0.25)
+    seen = 0
+    for k in range(len(scenes)):
+        tl.frame_at(tl.starts[k] + 0.1)
+        tl.frame_at(tl.starts[k] + 0.1 + 0.05)
+        seen = max(seen, sum(s.cached_layers() for s in tl.scenes))
+        assert sum(s.cached_layers() for s in tl.scenes) <= 2
+    assert seen == 2
+    tl.frame_at(0.0)  # going back works too, and frees the others
+    assert sum(s.cached_layers() for s in tl.scenes) <= 2
+
+
+def test_cells_do_not_jump_when_steps_come_closer_than_a_move(tmp_path):
+    sc = array_scene(tmp_path, items=["a", "c"], steps=[{"at": 1.0, "insert": "b"}, {"at": 1.2, "push": "z"}])
+    before = sc.cell_positions(1.2 - 1e-6)
+    after = sc.cell_positions(1.2 + 1e-6)
+    for cid in before:
+        assert abs(before[cid][0] - after[cid][0]) < 1.0  # where it was drawn is where the next move starts
+        assert abs(before[cid][1] - after[cid][1]) < 1.0
+    cell_c = 1
+    # c is mid-way to the right when the second step arrives, then heads back to its final slot from there
+    assert sc.cell_positions(1.0)[cell_c][0] < before[cell_c][0] and sc.cell_positions(1.4)[cell_c][0] < before[cell_c][0]
+
+
+def test_pushes_at_the_same_time_both_drop_in(tmp_path):
+    sc = array_scene(tmp_path, items=["a"], steps=[{"at": 1.0, "push": "x"}, {"at": 1.0, "push": "y"}])
+    early = sc.cell_positions(1.05)
+    assert early[1][1] < 0 and early[2][1] < 0 and 0 < early[1][2] < 1 and 0 < early[2][2] < 1
+    done = sc.cell_positions(2.0)
+    assert done[1][1] == pytest.approx(0, abs=1) and done[2][2] == 1.0
+
+
+def test_only_newly_marked_cells_fade_in_and_unmark_fades_out(tmp_path):
+    sc = array_scene(tmp_path, items=["a", "b", "c"], steps=[
+        {"at": 1.0, "mark": [0]}, {"at": 2.0, "mark": [0, 2]}, {"at": 3.0, "unmark": True}])
+
+    def mark(t):
+        return {cid: v[3] for cid, v in sc._drawn(sc.state_at(t), t).items()}
+
+    assert mark(1.2)[0] == pytest.approx(ds.ease_out(0.5)) and mark(1.2)[1] == 0 and mark(1.2)[2] == 0
+    m = mark(2.2)
+    assert m[0] == pytest.approx(1.0) and 0 < m[2] < 1 and m[1] == 0  # cell 0 stays marked; only cell 2 fades in
+    m = mark(3.2)
+    assert 0 < m[0] < 1 and 0 < m[2] < 1  # both fade out
+    assert mark(4.0) == {0: 0.0, 1: 0.0, 2: 0.0}
+    # the frames show it: the cell that stayed marked is identical either side of the second step
+    assert sc.frame(1.9).tobytes() != sc.frame(2.2).tobytes()
+
+
+def test_a_long_highlight_tag_stays_on_one_line_inside_its_row(tmp_path):
+    _, sc = table(tmp_path, highlight=[{"row": 2, "at": 1.0, "text": "a very long tag that needs several lines"}])
+    tag = next(iter(sc.tags.values()))
+    assert tag.height <= sc.row_h
+    assert any("table text shrunk" in w for w in sc.ctx.warnings)
+
+
+def test_counter_decimals_come_from_the_target(tmp_path):
+    for to, text in ((12, "12"), (0.5, "0.5"), (3.141, "3.141"), (1234.5, "1,234.5")):
+        _, sc = table(tmp_path, counter={"to": to, "at": 0.5, "seconds": 1})
+        assert ds._number_text(sc.counter_value(5.0), sc.counter["decimals"]) == text
+    assert ds.decimals_of(0.0000001) == 0 and ds.decimals_of(2.5e-6) == ds.MAX_COUNT_DECIMALS
+
+
+def test_cell_text_cannot_hold_a_line_break():
+    bad = {**TABLE, "rows": [["1", "two\nlines", "x"]]}
+    with pytest.raises(SpecError, match="one line"):
+        validate({"scenes": [bad]})
+    with pytest.raises(SpecError, match="one line"):
+        validate({"scenes": [{**ARRAY, "items": ["a\nb"]}]})
+    with pytest.raises(SpecError, match="one line"):
+        validate({"scenes": [{**ARRAY, "steps": [{"push": "a\nb"}]}]})
+
+
+def test_vertical_data_scenes_use_most_of_the_width_and_the_middle(tmp_path):
+    _, sc = table(tmp_path, "vertical")
+    x0, y0, x1, y1 = sc.card
+    W, H = sc.ctx.W, sc.ctx.H
+    assert (x1 - x0) / W >= 0.88
+    assert 0.3 * H < (y0 + y1) / 2 < 0.6 * H
+    arr = array_scene(tmp_path, "vertical")
+    ax0, _, ax1, _ = arr.card
+    assert (ax1 - ax0) / W >= 0.88

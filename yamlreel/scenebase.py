@@ -114,5 +114,13 @@ class Scene:
             self._static[key] = base
         return base.copy()
 
+    def cached_layers(self) -> int:
+        """How many static layers this scene is holding (tests and the timeline's memory bound use it)."""
+        return len(self._static)
+
+    def release(self) -> None:
+        """Drop the cached static layers. They are rebuilt on demand, so a scene may be released and drawn again."""
+        self._static.clear()
+
     def frame(self, t: float) -> Image.Image:  # pragma: no cover
         raise NotImplementedError

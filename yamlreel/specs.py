@@ -436,6 +436,8 @@ def _cell_text(path: str, v: Any) -> str:
     if v is None or isinstance(v, (list, dict)):
         raise SpecError(f"{path} must be text")
     out = _text(path, v, MAX_CELL_CHARS, "MAX_CELL_CHARS")
+    if "\n" in out or "\r" in out:
+        raise SpecError(f"{path} must be one line of text, without a line break")
     if not out.strip():
         raise SpecError(f"{path} must not be empty")
     return out
@@ -633,6 +635,8 @@ def _scene(i: int, raw: Any, env: _Env) -> dict[str, Any]:
     if missing:
         raise SpecError(f"{path} ({t}): missing {', '.join(missing)}")
     sc = dict(raw)
+    if "transition" in sc and sc["transition"] is None:  # `transition: null` on a scene is the same as not set
+        del sc["transition"]
     sc.setdefault("seconds", DEFAULT_SECONDS[t])
     first = _CHECKED_FIRST + _CHECKED_FIRST_BY_TYPE.get(t, ())
     for k in sorted(sc, key=lambda k: first.index(k) if k in first else len(first)):

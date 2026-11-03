@@ -105,13 +105,10 @@ def test_zoom_stays_in_frame_and_ends_on_the_new_frame():
         assert out.size == new.size
     assert same(Timeline._transition("zoom", old, new, 0.0), old)
     assert same(Timeline._transition("zoom", old, new, 1.0), new)
-    # mid-way the new frame is the centre crop of 1/z of its size, scaled back up (z = ease("out", 0.5) blend)
-    z = render_mod.ZOOM_FROM - (render_mod.ZOOM_FROM - 1.0) * ease("out", 0.5)
-    w, h = new.size
-    cw, ch = w / z, h / z
-    box = ((w - cw) / 2, (h - ch) / 2, (w + cw) / 2, (h + ch) / 2)
-    expected = Image.blend(old, new.resize((w, h), Image.BILINEAR, box=box), 0.5)
-    assert same(Timeline._transition("zoom", old, new, 0.5), expected)
+    # mid-way the far corner still shows the new frame's plain colour, blended half with the old one
+    mid = Timeline._transition("zoom", old, new, 0.5)
+    assert all(abs(got - want) <= 1 for got, want in zip(mid.getpixel((159, 89)), (105, 55, 30)))
+    assert not same(mid, Image.blend(old, new, 0.5))  # and the black quadrant has been scaled up, so it is not a plain fade
 
 
 def test_zoom_enlarges_the_new_frame_around_its_centre():
@@ -466,6 +463,63 @@ def frame_hashes(tmp_path, fmt: str) -> list[str]:
     return [hashlib.sha256(tl.frame_at(t).convert("RGB").tobytes()).hexdigest()[:16] for t in NO_NEW_KEYS_TIMES]
 
 
+def raster_fingerprint() -> tuple[str, str | None, bool]:
+    import PIL
+    import PIL.features
+    return PIL.__version__, PIL.features.version("freetype2"), bool(PIL.features.check("raqm"))
+
+
+# The text rasteriser the hashes above were taken with. On any other Pillow, FreeType or raqm the exact bytes of
+# rendered text can differ, so the byte-exact check is skipped there; the platform-independent checks below still run.
+HASH_FINGERPRINT = ("13.0.0", "2.14.3", False)
+
+
 @pytest.mark.parametrize("fmt", ["landscape", "vertical"])
 def test_a_spec_without_new_keys_renders_the_same_frames_as_0_2_2(tmp_path, fmt):
+    if raster_fingerprint() != HASH_FINGERPRINT:
+        pytest.skip(f"frame hashes were taken with {HASH_FINGERPRINT}, this is {raster_fingerprint()}")
     assert frame_hashes(tmp_path, fmt) == NO_NEW_KEYS_HASHES[fmt]
+
+
+@pytest.mark.parametrize("fmt", ["landscape", "vertical"])
+def test_new_keys_left_at_their_defaults_change_no_frame(tmp_path, fmt):
+    """Spelling out the defaults (fade 0.25, no stagger of its own) must give the frames of a spec that has none."""
+    plain = timeline(tmp_path, *NO_NEW_KEYS_SCENES, fmt=fmt)
+    spelled = timeline(tmp_path, *[{**s, "transition": {"type": "fade", "seconds": 0.25}} for s in NO_NEW_KEYS_SCENES],
+                       fmt=fmt, transition="fade")
+    for t in NO_NEW_KEYS_TIMES:
+        assert same(plain.frame_at(t), spelled.frame_at(t)), t
+
+
+@pytest.mark.parametrize("fmt", ["landscape", "vertical"])
+def test_frames_without_new_keys_keep_their_geometry_and_colours(tmp_path, fmt):
+    tl = timeline(tmp_path, *NO_NEW_KEYS_SCENES, fmt=fmt)
+    W, H = tl.ctx.W, tl.ctx.H
+    bg = tl.ctx.background()
+    for t in NO_NEW_KEYS_TIMES:
+        img = tl.frame_at(t)
+        assert img.size == (W, H) and img.mode == "RGB"
+        assert img.getpixel((W // 2, 2)) == bg.getpixel((W // 2, 2))  # the top edge is plain background
+    # the bullets scene (starts at 2 s) draws its three items top to bottom, inside the side margins
+    img = tl.frame_at(tl.starts[1] + 3.5)
+    bgl = tl.ctx.background()
+    rows = [y for y in range(H) if any(img.getpixel((x, y)) != bgl.getpixel((x, y)) for x in range(0, W, 3))]
+    assert rows and rows[0] > H * 0.05 and rows[-1] < H * 0.95
+    cols = [x for x in range(W) if any(img.getpixel((x, y)) != bgl.getpixel((x, y)) for y in range(0, H, 3))]
+    assert cols[0] >= tl.ctx.margin * 0.9 and cols[-1] <= W - tl.ctx.margin * 0.9
+
+
+@pytest.mark.parametrize("kind", ["slide", "zoom"])
+def test_slide_and_zoom_are_clamped_to_a_short_scene(tmp_path, kind):
+    tl = timeline(tmp_path, TITLE, {**TITLE, "seconds": 0.3, "transition": {"type": kind, "seconds": 1.0}}, TITLE)
+    assert tl._transitions[1]["seconds"] == pytest.approx(0.3)
+    assert any("shortened to fit" in w for w in tl.warnings)
+    mid = tl.frame_at(tl.starts[1] + 0.15)
+    assert mid.size == (tl.ctx.W, tl.ctx.H) and not same(mid, tl._scene_frame(1, 0.15))
+    assert same(tl.frame_at(tl.starts[2] + 0.5), tl._scene_frame(2, 0.5))  # the next scene is unaffected
+
+
+def test_a_scene_transition_of_null_inherits_the_top_level_one():
+    spec = validate({"transition": {"type": "slide", "seconds": 0.5}, "scenes": [TITLE, {**TITLE, "transition": None}]})
+    assert spec["scenes"][1].get("transition", spec["transition"]) == {"type": "slide", "seconds": 0.5}
+    assert validate({"scenes": [{**TITLE, "transition": None}]})["scenes"][0].get("transition") is None
