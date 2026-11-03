@@ -1,0 +1,23 @@
+# Meter demo: a token bucket that drains in a burst and refills (bucket, bar and slots shapes).
+# Render: yamlreel render examples/meter-demo.yaml --out out --preview --no-voice --contact-frames 6
+meta:
+  title: Token bucket rate limiting
+  tags: [rate-limiting, systems]
+theme: midnight
+formats: [vertical, landscape]
+music: {style: ambient, seed: 3}
+scenes:
+  - type: meter
+    title: Token bucket
+    shape: bucket
+    capacity: 10
+    start: 10
+    unit: tokens
+    in_label: refill 1 per second
+    out_label: requests
+    seconds: 10
+    caption: A burst spends tokens faster than they refill
+    steps:
+      - {at: 1.0, level: 4, seconds: 0.8, text: "burst of 6"}
+      - {at: 3.0, level: 0, seconds: 0.8, text: "empty = 429", color: accent2}
+      - {at: 5.0, level: 10, seconds: 4, text: "refilled"}

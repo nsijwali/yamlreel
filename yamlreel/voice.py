@@ -201,7 +201,7 @@ def screen_text(sc: dict[str, Any]) -> str:
     elif kind == "cta":
         parts = [sc.get("question"), *(f"{chr(65 + n)}: {a}" for n, a in enumerate(sc.get("answers", []))),
                  sc.get("prompt")]   # validation fills in the default prompt
-    else:  # shot, code, diagram, table, array: the title is the only prose; the data is read off the screen
+    else:  # shot, code, diagram, table, array, meter: the title is the only prose; the data is read off the screen
         parts = [sc.get("title")]
     parts.append(sc.get("caption"))
     seen: list[str] = []

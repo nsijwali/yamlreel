@@ -210,6 +210,7 @@ BASE_SCENES = {
                 "flash": [{"node": "a", "at": 1}]},
     "table": {"type": "table", "columns": ["id", "name"], "rows": [["1", "Ada"], ["2", "Lin"]]},
     "array": {"type": "array", "items": ["a", "b"]},
+    "meter": {"type": "meter", "capacity": 10, "steps": [{"at": 1, "level": 5}]},
     "cta": {"type": "cta", "question": "Which one?", "answers": ["x", "y"]},
 }
 
@@ -273,6 +274,9 @@ def test_type_confusion_every_scene_field(value):
     for field in sorted(ArrayScene.STEP_FIELDS):
         outcome({"scenes": [{**a, "steps": [{"push": "x", field: value}]}]})
         outcome({"scenes": [{**a, "steps": [{"at": 1, "mark": [0], field: value}]}]})
+    from yamlreel.datascenes import MeterScene
+    for field in sorted(MeterScene.STEP_FIELDS):
+        outcome({"scenes": [{**BASE_SCENES["meter"], "steps": [{"at": 1, "level": 5, field: value}]}]})
     for bad in (value, [value], [[value]]):
         outcome({"scenes": [{**t, "rows": bad}]})
         outcome({"scenes": [{**t, "columns": bad}]})

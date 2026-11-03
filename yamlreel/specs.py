@@ -18,8 +18,8 @@ from .config import (DEFAULTS, HARD_LIMITS, SHARED_KEYS, Config, _absolutize, cl
                      describe_value, merge, normalize_music)
 from .config import yaml_problem as _yaml_problem
 from .datascenes import (ARRAY_ACTIONS, DEFAULT_CTA_PROMPT, MAX_ANSWER_CHARS, MAX_ANSWERS, MAX_CELL_CHARS, MAX_CELLS,
-                         MAX_PROMPT_CHARS, MAX_QUESTION_CHARS, MAX_STEPS, MAX_TABLE_COLS, MAX_TABLE_ROWS, POP_SIDES,
-                         ArrayScene, ArrayStepError, TableScene, array_states)
+                         MAX_METER_CAPACITY, MAX_PROMPT_CHARS, MAX_QUESTION_CHARS, MAX_SLOTS, MAX_STEPS,
+                         MAX_TABLE_COLS, MAX_TABLE_ROWS, METER_SHAPES, POP_SIDES, ArrayScene, ArrayStepError, MeterScene, TableScene, array_states)
 from .music import ENERGY_LEVELS, NOTE_OFFSETS, SCALES, STYLE_DEFAULTS
 from .subtitles import (DEFAULT_SUBTITLES, MAX_KEYWORD_CHARS, MAX_KEYWORDS, POSITIONS, STYLES)
 from .scenes import SCENE_TYPES, DiagramScene, Scene
@@ -29,7 +29,7 @@ from .theme import get_theme
 FORMATS = {"landscape": (1920, 1080), "vertical": (1080, 1920), "square": (1080, 1080)}
 
 DEFAULT_SECONDS = {"title": 3.0, "type": 3.0, "shot": 4.0, "diagram": 7.0,
-                   "bullets": 5.0, "code": 6.0, "stat": 3.5, "table": 8.0, "array": 8.0, "cta": 6.0}
+                   "bullets": 5.0, "code": 6.0, "stat": 3.5, "table": 8.0, "array": 8.0, "meter": 10.0, "cta": 6.0}
 REQUIRED = {
     "title": ["title"],
     "type": ["text"],
@@ -40,6 +40,7 @@ REQUIRED = {
     "stat": ["value"],
     "table": ["columns", "rows"],
     "array": ["items"],
+    "meter": ["capacity"],
     "cta": ["question"],
 }
 MUSIC_STYLES = {*STYLE_DEFAULTS, "none"}
@@ -629,6 +630,50 @@ def _steps(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, A
     return steps
 
 
+def _meter_shape(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
+    return _choice(path, v, METER_SHAPES)
+
+
+def _meter_capacity(path: str, v: Any, sc: dict[str, Any], env: _Env) -> float:
+    if sc.get("shape", "bucket") == "slots":
+        return _number(path, v, 1, MAX_SLOTS, integer=True)   # one slot per unit
+    cap = _number(path, v, 0, MAX_METER_CAPACITY)
+    if cap <= 0:
+        raise SpecError(f"{path} must be a number greater than 0 (and at most {_fmt(MAX_METER_CAPACITY)})")
+    return cap
+
+
+def _meter_start(path: str, v: Any, sc: dict[str, Any], env: _Env) -> float:
+    return _number(path, v, 0, sc["capacity"])
+
+
+def _meter_label(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
+    return _text(path, v, MAX_CELL_CHARS, "MAX_CELL_CHARS")
+
+
+def _meter_steps(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for n, raw in enumerate(_list(path, v, 0, MAX_STEPS, "MAX_STEPS")):
+        p = f"{path}[{n}]"
+        st = _mapping(p, raw)
+        _no_unknown(p, st, MeterScene.STEP_FIELDS, "a meter step")
+        for key in ("at", "level"):
+            if key not in st:
+                raise SpecError(f"{p}: needs {key}")
+        item: dict[str, Any] = {"at": _number(f"{p}.at", st["at"], 0, MAX_CUE_SECONDS),
+                                "level": _number(f"{p}.level", st["level"], 0, sc["capacity"])}
+        if out and item["at"] < out[-1]["at"]:
+            raise SpecError(f"{p}.at must not be earlier than the previous step ({_fmt(out[-1]['at'])})")
+        if "seconds" in st:
+            item["seconds"] = _number(f"{p}.seconds", st["seconds"], 0.1, env.max_seconds)
+        if "text" in st:
+            item["text"] = _text(f"{p}.text", st["text"], MAX_CELL_CHARS, "MAX_CELL_CHARS")
+        if "color" in st:
+            item["color"] = _choice(f"{p}.color", st["color"], COLOR_NAMES)
+        out.append(item)
+    return out
+
+
 # One checker per scene field (common and per type). Each returns the normalised value.
 FIELD_CHECKS: dict[str, Checker] = {
     "type": _scene_type,
@@ -679,15 +724,23 @@ FIELD_CHECKS: dict[str, Checker] = {
     "scan": _scan,
     "counter": _counter,
     "steps": _steps,
+    "shape": _meter_shape,
+    "capacity": _meter_capacity,
+    "start": _meter_start,
+    "unit": _meter_label,
+    "in_label": _meter_label,
+    "out_label": _meter_label,
 }
 # Fields whose meaning depends on the scene type get their own checker; it wins over FIELD_CHECKS.
 TYPE_CHECKS: dict[str, dict[str, Checker]] = {
     "table": {"highlight": _table_highlight},
     "array": {"items": _cells},
+    "meter": {"steps": _meter_steps},
 }
 # Fields whose checker reads another field of the same scene, so that one is checked first.
 _CHECKED_FIRST = ("code", "nodes")
-_CHECKED_FIRST_BY_TYPE = {"table": ("columns", "rows"), "array": ("items", "stagger")}
+_CHECKED_FIRST_BY_TYPE = {"table": ("columns", "rows"), "array": ("items", "stagger"),
+                           "meter": ("shape", "capacity", "start")}
 
 
 def _scene(i: int, raw: Any, env: _Env) -> dict[str, Any]:

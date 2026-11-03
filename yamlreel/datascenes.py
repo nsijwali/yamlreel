@@ -685,6 +685,267 @@ class ArrayScene(Scene):
 
 
 
+# --- meter ----------------------------------------------------------------------------------------------
+
+METER_SHAPES = ("bucket", "bar", "slots")
+MAX_SLOTS = 20
+MAX_METER_CAPACITY = 1e9
+METER_STEP_SECONDS = 0.8   # how long a level change takes when the step has no `seconds`
+METER_FLASH_HOLD = 2.0     # how long a step's `text` stays up
+METER_DROPS = 4
+
+
+@dataclass(frozen=True)
+class MeterSegment:
+    """One level change: the level eases from `start_level` to `level` between t0 and t1."""
+    step: int            # index into the spec's `steps`
+    t0: float
+    t1: float
+    start_level: float   # where the level was when this step began (a step may begin mid-move)
+    level: float
+    text: str = ""
+    color: str = "accent"
+
+
+def meter_segments(spec: dict[str, Any]) -> list[MeterSegment]:
+    """The level changes of a meter spec, in time order. Pure: no rendering. A step that begins while the previous
+    one is still moving starts from the level reached by then, so the level never jumps."""
+    out: list[MeterSegment] = []
+    level = float(spec.get("start", 0))
+    for n, step in enumerate(spec.get("steps") or []):
+        t0 = float(step["at"])
+        if out and t0 < out[-1].t0:
+            raise ValueError(f"steps[{n}].at: {t0:g}s is earlier than the previous step ({out[-1].t0:g}s)")
+        if out:
+            level = _eased_level(out[-1], t0)
+        seg = MeterSegment(n, t0, t0 + float(step.get("seconds", METER_STEP_SECONDS)), level, float(step["level"]),
+                           str(step.get("text", "")), str(step.get("color", "accent")))
+        out.append(seg)
+    return out
+
+
+def _eased_level(seg: MeterSegment, t: float) -> float:
+    span = seg.t1 - seg.t0
+    p = 1.0 if span <= 0 else (t - seg.t0) / span
+    return seg.start_level + (seg.level - seg.start_level) * ease("in_out", p)
+
+
+def meter_level(spec: dict[str, Any], t: float, segments: list[MeterSegment] | None = None) -> float:
+    """The level at scene time t: `start` until the first step, then eased (in_out) between steps."""
+    segs = meter_segments(spec) if segments is None else segments
+    i = bisect.bisect_right([s.t0 for s in segs], t) - 1
+    return float(spec.get("start", 0)) if i < 0 else _eased_level(segs[i], t)
+
+
+class MeterScene(Scene):
+    """A level that fills and drains: a bucket with liquid, a horizontal bar or a row of slots, following `steps`."""
+
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"title", "shape", "capacity", "start", "unit", "in_label",
+                                                  "out_label", "steps"})
+    STEP_FIELDS: ClassVar[frozenset[str]] = frozenset({"at", "level", "seconds", "text", "color"})
+
+    def __init__(self, spec: dict[str, Any], ctx: Ctx):
+        super().__init__(spec, ctx)
+        u, th = ctx.u, ctx.theme
+        W, H = ctx.W, ctx.H
+        margin = fill_margin(ctx)
+        self.shape = str(spec.get("shape") or "bucket")
+        self.capacity = float(spec["capacity"])
+        self.start = float(spec.get("start", 0))
+        self.unit = str(spec.get("unit") or "")
+        steps = spec.get("steps") or []
+        self.segments = meter_segments(spec)
+        self.t0s = [s.t0 for s in self.segments]
+        self.decimals = max([decimals_of(self.start), *(decimals_of(float(st["level"])) for st in steps)])
+        self.title = (ctx.block(str(spec["title"]), ctx.display, 56 * u * ctx.fs, W - 2 * margin, align="center")
+                      if spec.get("title") else None)
+        self.readouts = _BlockCache()
+        self.in_block = self._label(spec.get("in_label"))
+        self.out_block = self._label(spec.get("out_label"))
+        self.flashes = {s.step: make_block(s.text, "sans_bold", 40 * u * ctx.fs, W * 0.8, align="center")
+                        for s in self.segments if s.text}
+        # vertical stack: title, readout, flash text, drop zone in, the meter, drop zone out
+        self.readout_h = 100 * u * ctx.fs
+        self.zone = 80 * u * ctx.fs
+        self.flash_h = 84 * u * ctx.fs
+        cx = W / 2
+        if self.shape == "bucket":
+            self.body_h = (640 if ctx.vertical else 380) * u
+            self.top_w = min((600 if ctx.vertical else 400) * u, W - 2 * margin)
+            self.bottom_w = self.top_w * 0.72
+        elif self.shape == "bar":
+            self.body_h = (110 if ctx.vertical else 100) * u
+            self.top_w = self.bottom_w = W - 2 * margin
+        else:
+            n = int(self.capacity)
+            self.pitch = (W - 2 * margin) / n
+            self.slot_w = min(self.pitch * 0.8, 150 * u)
+            self.body_h = min(self.slot_w * 1.7, (300 if ctx.vertical else 200) * u)
+            self.top_w = self.bottom_w = self.pitch * n
+        title_h = self.title.height + 36 * u if self.title else 0.0
+        total = title_h + self.readout_h + 2 * self.zone + self.body_h + self.flash_h
+        top = max(H * 0.05, centre_y(ctx) - total / 2)
+        self.title_xy = (cx, top)
+        self.readout_y = top + title_h
+        self.flash_y = self.readout_y + self.readout_h
+        self.body_top = self.flash_y + self.flash_h + self.zone
+        self.body_bot = self.body_top + self.body_h
+        self.cx = cx
+        self.readout_size = 90 * u * ctx.fs
+        end = max([s.t1 for s in self.segments], default=0.0)
+        if end > self.duration:
+            ctx.warn("a meter step ends after the scene does; lengthen the scene or move the steps earlier")
+
+    def _label(self, text: Any) -> TextBlock | None:
+        c = self.ctx
+        return make_block(str(text), "sans_bold", 34 * c.u * c.fs, c.W * 0.8, align="center") if text else None
+
+    # --- geometry (also used by tests) ------------------------------------------------------------------
+
+    def level_at(self, t: float) -> float:
+        i = bisect.bisect_right(self.t0s, t) - 1
+        return self.start if i < 0 else _eased_level(self.segments[i], t)
+
+    def motion_at(self, t: float) -> tuple[int, float]:
+        """(+1 rising, -1 draining or 0, how strongly the drops show 0..1) at scene time t."""
+        i = bisect.bisect_right(self.t0s, t) - 1
+        if i < 0:
+            return 0, 0.0
+        seg = self.segments[i]
+        if t >= seg.t1 or seg.level == seg.start_level:
+            return 0, 0.0
+        p = (t - seg.t0) / (seg.t1 - seg.t0)
+        return (1 if seg.level > seg.start_level else -1), min(1.0, p * 6, (1 - p) * 6)
+
+    def surface_y(self, level: float) -> float:
+        """Top of the liquid (bucket) at this level."""
+        return self.body_bot - self.body_h * max(0.0, min(1.0, level / self.capacity))
+
+    def _half_width(self, y: float) -> float:
+        """Half the inside width of the bucket at height y."""
+        f = (y - self.body_top) / self.body_h
+        return (self.bottom_w + (self.top_w - self.bottom_w) * (1 - f)) / 2
+
+    def drop_x(self, level: float) -> float:
+        """Where drops fall in or out: the middle of a bucket, the fill front of a bar, the active slot."""
+        if self.shape == "bar":
+            x0 = self.cx - self.top_w / 2
+            return x0 + self.top_w * max(0.0, min(1.0, level / self.capacity))
+        if self.shape == "slots":
+            n = int(self.capacity)
+            idx = min(n - 1, max(0, int(math.ceil(level)) - 1)) if level > 0 else 0
+            return self.cx - self.top_w / 2 + (idx + 0.5) * self.pitch
+        return self.cx
+
+    # --- drawing ------------------------------------------------------------------------------------------
+
+    def _draw_static(self, img: Image.Image) -> None:
+        c, th = self.ctx, self.ctx.theme
+        d = ImageDraw.Draw(img)
+        w = max(3, int(5 * c.u))
+        x0, x1 = self.cx - self.top_w / 2, self.cx + self.top_w / 2
+        if self.shape == "bucket":
+            b = (self.bottom_w) / 2
+            pts = [(x0, self.body_top), (self.cx - b, self.body_bot), (self.cx + b, self.body_bot), (x1, self.body_top)]
+            d.polygon(pts, fill=th.card)
+            d.line([pts[0], pts[1], pts[2], pts[3]], fill=th.line, width=w, joint="curve")
+        elif self.shape == "bar":
+            d.rounded_rectangle([x0, self.body_top, x1, self.body_bot], int(self.body_h / 2), fill=th.card,
+                                outline=th.line, width=w)
+        else:
+            for i in range(int(self.capacity)):
+                sx = x0 + (i + 0.5) * self.pitch
+                d.rounded_rectangle([sx - self.slot_w / 2, self.body_top, sx + self.slot_w / 2, self.body_bot],
+                                    int(10 * c.u), fill=th.card, outline=th.line, width=max(2, int(3 * c.u)))
+
+    def _draw_fill(self, img: Image.Image, level: float, a: float) -> None:
+        c, th = self.ctx, self.ctx.theme
+        d = ImageDraw.Draw(img)
+        frac = max(0.0, min(1.0, level / self.capacity))
+        liquid = lerp_color(th.card, th.accent, a)
+        inset = max(3, int(5 * c.u))
+        if self.shape == "bucket":
+            if frac <= 0:
+                return
+            ys = self.surface_y(level)
+            yb = self.body_bot - inset
+            half_s, half_b = self._half_width(ys) - inset, self._half_width(yb) - inset
+            d.polygon([(self.cx - half_s, ys), (self.cx + half_s, ys), (self.cx + half_b, yb), (self.cx - half_b, yb)],
+                      fill=liquid)
+            d.line([(self.cx - half_s, ys), (self.cx + half_s, ys)], fill=lerp_color(liquid, th.fg, 0.35),
+                   width=max(2, int(4 * c.u)))
+        elif self.shape == "bar":
+            x0 = self.cx - self.top_w / 2 + inset
+            x1 = x0 + (self.top_w - 2 * inset) * frac
+            if x1 - x0 >= 1:
+                r = int((self.body_h - 2 * inset) / 2)
+                d.rounded_rectangle([x0, self.body_top + inset, x1, self.body_bot - inset],
+                                    min(r, int((x1 - x0) / 2)), fill=liquid)
+        else:
+            x0 = self.cx - self.top_w / 2
+            for i in range(int(self.capacity)):
+                f = max(0.0, min(1.0, level - i))
+                if f <= 0:
+                    continue
+                sx = x0 + (i + 0.5) * self.pitch
+                top = self.body_bot - inset - (self.body_h - 2 * inset) * f
+                d.rounded_rectangle([sx - self.slot_w / 2 + inset, top, sx + self.slot_w / 2 - inset, self.body_bot - inset],
+                                    int(6 * c.u), fill=liquid)
+
+    def _draw_drops(self, img: Image.Image, t: float, level: float, direction: int, strength: float) -> None:
+        if direction == 0 or strength <= 0:
+            return
+        c, th = self.ctx, self.ctx.theme
+        d = ImageDraw.Draw(img)
+        r = max(4.0, 9 * c.u)
+        base = th.accent if direction > 0 else th.accent2
+        x_mid = self.drop_x(level)
+        spread = (self.top_w * 0.1) if self.shape == "bucket" else (self.pitch * 0.12 if self.shape == "slots" else 14 * c.u)
+        for k in range(METER_DROPS):
+            ph = (t * 1.5 + k / METER_DROPS) % 1.0
+            x = x_mid + (k - (METER_DROPS - 1) / 2) * spread
+            if direction > 0:   # fall in from above into the liquid
+                y0 = self.body_top - self.zone * 0.7
+                y1 = self.surface_y(level) if self.shape == "bucket" else self.body_top + self.body_h * 0.4
+                y, a = y0 + (y1 - y0) * ph * ph, min(1.0, ph * 5)
+            else:               # leave through the bottom
+                y0 = self.body_bot - r * 2
+                y, a = y0 + (self.zone * 0.6) * ph * ph, min(1.0, (1 - ph) * 3)
+            a *= strength
+            if a > 0.02:
+                d.ellipse([x - r, y - r * 1.3, x + r, y + r * 1.3], fill=lerp_color(th.bg, base, a))
+
+    def frame(self, t: float) -> Image.Image:
+        c, th, u = self.ctx, self.ctx.theme, self.ctx.u
+        img = self.static_layer("meter", self._draw_static)
+        if self.title:
+            blit(img, self.title, self.title_xy, th.fg, _appear(t, 0.05), "tc")
+        level = self.level_at(t)
+        appear = _appear(t, 0.1, 0.5)
+        self._draw_fill(img, level, appear)
+        direction, strength = self.motion_at(t)
+        self._draw_drops(img, t, level, direction, strength * appear)
+        value = round(level, self.decimals)
+        unit = self.unit[:-1] if value == 1 and len(self.unit) > 1 and self.unit.endswith("s") else self.unit
+        text = _number_text(value, self.decimals) + (f" {unit}" if unit else "")
+        size = self.readout_size
+        blk = self.readouts.get(text, lambda s: make_block(s, "sans_bold", size, c.W * 0.9, min_size=10, align="center"))
+        blit(img, blk, (self.cx, self.readout_y + self.readout_h / 2), th.fg, appear, "mc")
+        if direction > 0 and self.in_block:
+            blit(img, self.in_block, (self.cx, self.body_top - self.zone * 0.88), th.accent, strength, "mc")
+        elif direction < 0 and self.out_block:
+            blit(img, self.out_block, (self.cx, self.body_bot + self.zone * 0.88), th.accent2, strength, "mc")
+        i = bisect.bisect_right(self.t0s, t) - 1
+        while i >= 0 and i not in self.flashes:   # the latest step that has text
+            i -= 1
+        if i >= 0:
+            seg = self.segments[i]
+            a = _appear(t, seg.t0, 0.25) * (1.0 - ease("in_out", (t - seg.t0 - METER_FLASH_HOLD) / 0.4))
+            if a > 0:
+                blit(img, self.flashes[i], (self.cx, self.flash_y), _color(c, seg.color), a, "tc")
+        return img
+
+
 # --- cta end card ---------------------------------------------------------------------------------------
 
 class CtaScene(Scene):
