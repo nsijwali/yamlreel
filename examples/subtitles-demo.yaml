@@ -1,0 +1,41 @@
+# Word-by-word subtitles: karaoke captions timed from the narration, keywords and numbers highlighted, and an
+# SRT file next to the video. Needs a voice server (see "Voiceover in your own voice" in the README), or swap each
+# `narration:` for `narration_audio:` plus the same text as `narration:` (the transcript), and optionally
+# `narration_words: clip.words.json` for exact word times from an aligner.
+# Render: yamlreel render examples/subtitles-demo.yaml --out out --preview --contact-frames 6
+meta:
+  title: Why caches need an expiry
+  tags: [caching, backend]
+theme: midnight
+formats: [vertical, landscape]
+music: {style: koto, seed: 7}
+subtitles:
+  style: karaoke          # karaoke | pop | plain
+  words: 4                # words on screen at once, 1..8
+  keywords: [cache, expiry]
+  numbers: true           # 60, 10,000 ... are highlighted too
+  srt: true               # writes <out>/<format>/subtitles.srt
+scenes:
+  - type: title
+    eyebrow: Caching
+    title: Why expire a cache?
+    seconds: 3
+    narration: A cache is fast because it remembers answers. But remembered answers go stale.
+  - type: stat
+    value: "60 seconds"
+    label: a typical time to live
+    count: true
+    seconds: 4
+    caption: Short enough to stay fresh
+    narration: Most caches keep an entry for about 60 seconds. After that, the next request fetches a fresh copy.
+  - type: bullets
+    title: Why it matters
+    items: [Fresh data, Bounded memory, Fewer surprises]
+    seconds: 5
+    narration: Expiry keeps data fresh, memory bounded, and behaviour predictable.
+  - type: title
+    title: Set an expiry
+    subtitle: Every cache entry needs one
+    seconds: 3
+    subtitles: false      # this scene stays plain
+    narration: Always set an expiry.

@@ -10,6 +10,8 @@ from pathlib import Path
 import yaml
 
 from . import __version__, legacy
+from . import subtitles as subs_mod
+from . import voice as voice_mod
 from .config import CONFIG_FILENAME, config_base, Config, ConfigError, load_config, user_config_path
 from .voice import VoiceError, VoiceServer
 from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, render, share_copy
@@ -58,7 +60,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
     cfg = _config(args)
     spec = load_spec(args.spec, cfg)
     total = sum(s["seconds"] for s in spec["scenes"])
-    print(f"ok: {len(spec['scenes'])} scenes, {total:.1f}s, theme={spec['theme']}, formats={spec['formats']}")
+    vo = spec.get("voiceover") or {}
+    narrated = [sc for sc in spec["scenes"] if sc.get("narration_audio") or voice_mod.narration_text(sc, vo)]
+    subtitled = sum(1 for sc in narrated if subs_mod.scene_settings(spec, sc) is not None
+                    and (sc.get("narration_words") or voice_mod.narration_text(sc, vo)))
+    print(f"ok: {len(spec['scenes'])} scenes, {total:.1f}s, theme={spec['theme']}, formats={spec['formats']}, "
+          f"narrated={len(narrated)}, subtitled={subtitled}")
     return 0
 
 

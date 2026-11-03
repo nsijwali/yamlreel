@@ -176,8 +176,9 @@ def fill_margin(ctx: Ctx) -> int:
 
 
 def centre_y(ctx: Ctx) -> float:
-    """Where a data scene centres itself vertically: the middle of the frame above the caption zone."""
-    return ctx.H * (0.46 if ctx.vertical else 0.45)
+    """Where a data scene centres itself vertically: the middle of the frame above the caption and subtitle zone
+    (which starts at about 0.73 of the height in vertical frames)."""
+    return ctx.H * (0.42 if ctx.vertical else 0.45)
 
 
 def _color(ctx: Ctx, name: str) -> tuple[int, int, int]:
@@ -277,7 +278,7 @@ class TableScene(Scene):
                                         max_h=120 * u) if self.counter["label"] else None)
             counter_h = final.height + (self.cnt_label.height + 10 * u if self.cnt_label else 0)
             self._cnt_cache = _BlockCache(self.COUNTER_CACHE)
-        area_h = H * (0.60 if ctx.vertical else 0.66) - head_h - (counter_h + 34 * u if ctx.vertical and self.counter else 0)
+        area_h = H * (0.57 if ctx.vertical else 0.66) - head_h - (counter_h + 34 * u if ctx.vertical and self.counter else 0)
         tag_size_k = 0.72
 
         def tag_block(text: str, base: float) -> TextBlock:

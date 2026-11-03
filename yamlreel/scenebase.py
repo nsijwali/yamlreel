@@ -93,7 +93,9 @@ def _appear(t: float, start: float, dur: float = 0.5) -> float:
 class Scene:
     # The spec keys a scene reads. specs.py rejects anything else, and a test keeps these tables in step
     # with what the constructors actually read.
-    COMMON_FIELDS: ClassVar[frozenset[str]] = frozenset({"type", "seconds", "caption", "narration", "narration_audio", "transition"})
+    COMMON_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"type", "seconds", "caption", "narration", "narration_audio", "transition", "narration_words", "subtitles",
+         "keywords"})
     FIELDS: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(self, spec: dict[str, Any], ctx: Ctx):

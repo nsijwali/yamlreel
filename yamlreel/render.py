@@ -13,6 +13,7 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from . import music as music_mod
+from . import subtitles as subs_mod
 from . import voice as voice_mod
 from .config import HARD_LIMITS
 from .safety import UnsafeInput, resolve_local
@@ -80,7 +81,8 @@ def slugify(text: str) -> str:
 
 class Timeline:
     def __init__(self, spec: dict[str, Any], fmt: str, workdir: Path, scale: float = 1.0,
-                 runtime: Runtime | None = None, durations: list[float] | None = None):
+                 runtime: Runtime | None = None, durations: list[float] | None = None,
+                 words: dict[int, subs_mod.SceneWords] | None = None):
         W, H = FORMATS[fmt]
         W, H = int(W * scale), int(H * scale)
         self.fmt = fmt
@@ -112,6 +114,21 @@ class Timeline:
                               f"scene ({sc.duration:.2f}s); shortened to fit")
                 tr["seconds"] = sc.duration
         self._caps = {i: make_caption(self.ctx, sc.caption) for i, sc in enumerate(self.scenes) if sc.caption}
+        self._subs: dict[int, subs_mod.SubtitleTrack] = {}  # scene index -> its subtitles
+        self._cap_from: dict[int, float] = {}  # a subtitled scene's caption waits until its speech has ended
+        for i, sw in (words or {}).items():
+            cfg = subs_mod.scene_settings(spec, scenes_spec[i])
+            if cfg is None:
+                continue
+            cues = subs_mod.build_cues(list(sw.words), int(cfg["words"]), cfg["keywords"], bool(cfg["numbers"]),
+                                       limit=self.scenes[i].duration)
+            self._subs[i] = subs_mod.SubtitleTrack(self.ctx, cues, cfg)
+            if i in self._caps:
+                self._cap_from[i] = subs_mod.caption_start(sw)
+        if self._cap_from:
+            ids = sorted(self._cap_from)
+            self.ctx.warn(f"scene{'s' if len(ids) != 1 else ''} {', '.join(map(str, ids[:8]))}{', ...' if len(ids) > 8 else ''}: "
+                          "the caption appears after the narration ends, so it does not cover the subtitles")
         self._current = -1  # the scene frame_at last drew; scenes far from it give their cached layers back
         self._last: dict[int, Image.Image] = {}  # at most one entry: the last frame of the scene before this one
         self._wm = self._make_watermark(spec.get("watermark"))
@@ -176,11 +193,23 @@ class Timeline:
         img = sc.frame(lt)
         if i in self._caps:
             pill, mask = self._caps[i]
-            a = ease_out((lt - 0.35) / 0.25)
+            a = ease_out((lt - self._cap_from.get(i, 0.35)) / 0.25)
             if a > 0:
                 m = mask if a >= 1 else mask.point(lambda v: int(v * a))
                 img.paste(pill, (int((self.ctx.W - pill.width) / 2), int(self.ctx.caption_y - pill.height / 2)), m)
+        track = self._subs.get(i)
+        if track is not None:
+            track.draw(img, lt)
         return img
+
+    def subtitle_cues(self) -> list[subs_mod.Cue]:
+        """Every subtitle cue of the video with absolute times, in order, none overlapping the next."""
+        out: list[subs_mod.Cue] = []
+        for i in sorted(self._subs):
+            off = self.starts[i]
+            for c in self._subs[i].cues:
+                out.append(subs_mod.Cue(c.start + off, c.end + off, c.words, c.keywords))
+        return out
 
     def frame_at(self, t: float) -> Image.Image:
         i, lt = self.locate(t)
@@ -354,7 +383,12 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         # snapping has rounded them, and in case the caller never validated. Absolute limits always apply.
         limits = spec.get("limits") or {}
         limit = min(limits.get("max_seconds", HARD_LIMITS["max_seconds"]), HARD_LIMITS["max_seconds"])
-        durations = plan_durations(spec, voice_mod.scene_floors(spec, clips))
+        try:
+            words, sub_warnings = subs_mod.scene_words(
+                spec, clips, lambda p: resolve_local(p, Path(spec.get("_dir", ".")), rt.roots))
+        except (subs_mod.SubtitleError, UnsafeInput) as e:
+            raise RenderError(f"subtitles: {e}") from e
+        durations = plan_durations(spec, subs_mod.raise_floors(spec, words, voice_mod.scene_floors(spec, clips)))
         total_seconds = sum(durations)
         if total_seconds > limit:
             raise RenderError(f"after narration and beat snapping the video is {total_seconds:.1f}s; "
@@ -363,8 +397,14 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
             check_frame_budget(total_seconds, fps, n_formats)
         except SpecError as e:
             raise RenderError(str(e)) from e
-        tl = Timeline(spec, fmt, cache, scale, rt, durations=durations)
+        tl = Timeline(spec, fmt, cache, scale, rt, durations=durations, words=words)
+        tl.ctx.warnings.extend(w for w in sub_warnings if w not in tl.ctx.warnings)
         total = tl.total
+        srt = None
+        if words and (spec.get("subtitles") or {}).get("srt"):
+            cues = tl.subtitle_cues()
+            srt = out / "subtitles.srt"
+            srt.write_text(subs_mod.srt_text(cues, bool(spec["subtitles"].get("uppercase"))), encoding="utf-8")
         narration = voice_mod.write_wav(work / "narration.wav", voice_mod.build_track(clips, tl.starts, total)) if clips else None
         audio = _prepare_audio(spec, total, work, music_override, rt)
         poster = tl.frame_at(tl.poster_time())
@@ -423,5 +463,5 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         if contact:
             fracs = contact_fracs(contact_frames)
             sheet = contact_sheet(tl, out / "contact.png", fracs=fracs)
-    return {"video": out / "video.mp4", "poster": out / "poster.jpg", "contact": sheet,
+    return {"video": out / "video.mp4", "poster": out / "poster.jpg", "contact": sheet, "srt": srt,
             "seconds": total, "warnings": tl.warnings, "size": (W, H)}

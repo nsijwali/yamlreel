@@ -20,6 +20,7 @@ from .config import yaml_problem as _yaml_problem
 from .datascenes import (ARRAY_ACTIONS, MAX_CELL_CHARS, MAX_CELLS, MAX_STEPS, MAX_TABLE_COLS, MAX_TABLE_ROWS,
                          POP_SIDES, ArrayScene, ArrayStepError, TableScene, array_states)
 from .music import NOTE_OFFSETS, SCALES
+from .subtitles import (DEFAULT_SUBTITLES, MAX_KEYWORD_CHARS, MAX_KEYWORDS, POSITIONS, STYLES)
 from .scenes import SCENE_TYPES, DiagramScene, Scene
 from .textkit import MAX_COUNT_MAGNITUDE, split_count
 from .theme import get_theme
@@ -233,6 +234,22 @@ def _narration_audio(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
     if not isinstance(v, str) or not v.strip():
         raise SpecError(f"{path} must be a path to a .wav file")
     return _text(path, v)
+
+
+def _narration_words(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
+    if not isinstance(v, str) or not v.strip():
+        raise SpecError(f"{path} must be a path to a .json file of {{word, start, end}} entries")
+    return _text(path, v)
+
+
+def _keywords(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[str]:
+    out = []
+    for n, k in enumerate(_list(path, v, 0, MAX_KEYWORDS, "MAX_KEYWORDS")):
+        word = _text(f"{path}[{n}]", k, MAX_KEYWORD_CHARS, "MAX_KEYWORD_CHARS").strip()
+        if not word:
+            raise SpecError(f"{path}[{n}] must not be empty")
+        out.append(word)
+    return out
 
 
 def _source(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
@@ -578,6 +595,9 @@ FIELD_CHECKS: dict[str, Checker] = {
     "caption": _text_field,
     "narration": _narration,
     "narration_audio": _narration_audio,
+    "narration_words": _narration_words,
+    "subtitles": _bool_field,
+    "keywords": _keywords,
     "transition": _transition,
     "stagger": _stagger,
     "count": _count,
@@ -814,6 +834,33 @@ def _voiceover(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, 
     return vo
 
 
+SUBTITLE_KEYS = tuple(DEFAULT_SUBTITLES)
+
+
+def _subtitles_top(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any] | bool:
+    """`true` (all defaults), `false`, or a mapping. Returns False or the full settings."""
+    if v is None or v is False:
+        return False
+    sub = {} if v is True else dict(_mapping(path, v))
+    _no_unknown(path, sub, SUBTITLE_KEYS, "subtitles")
+    out: dict[str, Any] = dict(DEFAULT_SUBTITLES)
+    out["keywords"] = []
+    if "style" in sub:
+        out["style"] = _choice(f"{path}.style", sub["style"], STYLES)
+    if "words" in sub:
+        out["words"] = _number(f"{path}.words", sub["words"], 1, 8, integer=True)
+    if "position" in sub:
+        out["position"] = _choice(f"{path}.position", sub["position"], POSITIONS)
+    if "size" in sub:
+        out["size"] = _number(f"{path}.size", sub["size"], 0.6, 1.6)
+    for k in ("uppercase", "numbers", "srt"):
+        if k in sub:
+            out[k] = _bool(f"{path}.{k}", sub[k])
+    if "keywords" in sub:
+        out["keywords"] = _keywords(f"{path}.keywords", sub["keywords"], spec, env)
+    return out
+
+
 def _scenes(path: str, v: Any, spec: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
     if not isinstance(v, list) or not v:
         raise SpecError("spec needs a non-empty 'scenes' list")
@@ -840,6 +887,7 @@ TOP_CHECKS: dict[str, Checker] = {
     "meta": _meta,
     "voiceover": _voiceover,
     "transition": _transition_top,
+    "subtitles": _subtitles_top,
     "scenes": _scenes,
     "poster": _poster,
 }

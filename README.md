@@ -94,6 +94,48 @@ yamlreel render cache-stampede-45s.yaml --no-voice
 
 </details>
 
+## Word-by-word subtitles
+
+Add `subtitles: true` and every narrated scene gets burned-in captions that show three to five words at a time,
+with the word being spoken highlighted. Nothing else is needed: no extra dependency and no network.
+
+```yaml
+subtitles:
+  style: karaoke            # karaoke: the spoken word sits in an accent box; pop: it grows 15%; plain: no highlight
+  words: 4                  # words on screen at once, 1 to 8
+  position: lower           # lower (above the Shorts UI) | middle
+  size: 1.0                 # 0.6 to 1.6 times the base size
+  uppercase: false
+  keywords: [token bucket, "429"]   # whole words or phrases, any case, drawn in the second accent colour
+  numbers: true             # words with digits count as keywords (default on)
+  srt: true                 # also write <out>/<format>/subtitles.srt
+scenes:
+  - type: bullets
+    narration: Each request spends a token.
+    keywords: [token]       # keywords for this scene only
+  - type: title
+    narration: That is the whole idea.
+    subtitles: false        # this scene has no subtitles
+```
+
+- **Where the timing comes from.** The text is what the voice says (`narration:`, or the screen text with
+  `read_screen`). Without a word-timing file, yamlreel works the timing out from the audio: it finds the loud parts,
+  puts sentence and clause ends in the silent gaps, and shares the time inside each stretch by how long each word is to
+  say. That is usually within about 150 ms per word, which showing a few words at a time hides. It reports it as a warning,
+  and another warning if the gaps do not match the punctuation.
+- **Exact timing.** Give a scene `narration_words: clip.words.json`, a JSON list of
+  `{"word": "Each", "start": 0.12, "end": 0.35}` entries (seconds from the start of the clip; at most 2000 entries and
+  256 KB; times must not go backwards and must fit inside the clip). Any aligner can produce it outside yamlreel. The file
+  must be inside the spec folder or an allowed folder, like `narration_audio`. Its words are the ones shown.
+- **Your own recordings.** With `narration_audio: take.wav`, put the words spoken in `narration:` as the transcript. A
+  recording with no transcript and no `narration_words` gets no subtitles, and a warning says so.
+- **Captions and subtitles.** A scene's `caption` appears after its speech has ended (0.2 s later), so it never covers the
+  subtitles, and a subtitled scene with a caption is made 1.4 s longer so the caption can be read. Scenes without narration,
+  or with `subtitles: false`, behave as before.
+- **SRT.** `srt: true` writes the same chunks and times as a `.srt` file, for uploading as captions.
+- `--no-voice` drops the narration, so there is nothing to caption; render with the voice (or `narration_audio`) to see
+  subtitles, and use `--preview --contact-frames 6` to check them.
+
 ## Examples
 
 | Spec | What it is |
@@ -101,6 +143,7 @@ yamlreel render cache-stampede-45s.yaml --no-voice
 | [`examples/cache-stampede-45s.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/cache-stampede-45s.yaml) | A 45-second system-design explainer with a diagram, code and a narrated script. |
 | [`examples/motion-demo.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/motion-demo.yaml) | Scene transitions, staggered bullets and counting-up numbers. |
 | [`examples/index-scan.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/index-scan.yaml) | A table that is scanned row by row, a sorted index taking inserts, and a queue. |
+| [`examples/subtitles-demo.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/subtitles-demo.yaml) | Narrated scenes with karaoke subtitles, highlighted keywords and numbers, and an SRT file. |
 
 It is narrated; add `--no-voice` to render it with music only. For more starting points, run
 `yamlreel init` with the `system-design`, `project` or `code-tip` template.
@@ -111,7 +154,7 @@ It is narrated; add `--no-voice` to render it with music only. For more starting
 | --- | --- |
 | `yamlreel --version` | Prints the installed version and exits. |
 | `yamlreel init <template> <file>` | Writes a starter spec: `system-design`, `project` or `code-tip`. |
-| `yamlreel validate <spec>` | Checks a spec and prints its scene count and length, without rendering. |
+| `yamlreel validate <spec>` | Checks a spec and prints its scene count, length and how many scenes are narrated and subtitled, without rendering. |
 | `yamlreel render <spec>` | Renders. Useful flags: `--preview`, `--out DIR`, `--format vertical\|landscape\|square\|all`, `--music koto\|none\|file.mp3`, `--fps N`, `--contact-frames N`, `--no-voice`, `--voice-url URL`, `--read-screen`, `--allow-path DIR`, `--allow-private-hosts`. |
 | `yamlreel config init [--user]` / `config show` | Writes a starter config, or shows the merged settings and the files they came from. |
 | `yamlreel music --seconds 30 --out track.wav` | Generates the music track on its own (`--bpm`, `--root`, `--scale`, `--seed`). |
@@ -163,7 +206,8 @@ transition: fade              # fade | slide | zoom | cut, or {type: slide, seco
 watermark: "Your Name"        # or {text|image: logo.png, position: top-left|top-right|bottom-left|bottom-right, opacity: 0.75, size: 30}
 poster: {scene: 0, at: 2.6}   # optional; default is the first scene, just before it ends
 voiceover: {voice, language, gap, music_level, read_screen}
-scenes: [...]
+subtitles: {style: karaoke | pop | plain, words: 4, position: lower | middle, size: 1.0, uppercase: false, keywords: [], numbers: true, srt: false}   # or `true`; default off
+scenes: [...]                 # every scene also takes: transition, subtitles (false opts out), keywords (extra subtitle keywords), narration_words (JSON of exact word times)
 ```
 
 - **Diagrams:** `nodes` take `id, label, kind (client|service|cache|db), x, y, at`, where `x` and `y` are fractions of the frame. `vx, vy` override them in vertical frames, so one diagram fits both shapes. `edges` take `from, to, label, bad, dashed, at, color` and `flash` takes `node, at, text, color`.
@@ -173,6 +217,7 @@ scenes: [...]
 - **Count-up:** `count: true` on a `stat` scene counts the one number in `value` up from 0 over 60% of the scene; `count: {from: 0, seconds: 2.5}` sets both. Prefix, suffix, thousands separators and decimals are kept, and the scene ends on exactly the `value` text. `value` must hold exactly one number.
 - **Table:** `columns` (1 to 6) and `rows` (1 to 12, each with one cell per column, cells up to 40 characters; quote a number to keep its formatting). Rows appear `stagger` seconds apart (default 0.4; `reveal: all` shows them at once). `scan: {at: 1.5, per_row: 0.3, stop: 4, color: accent}` walks a bar down from the first row and stays on row `stop` (rows count from 0; `scan: true` walks to the last row). `highlight: [{row: 4, at: 4.0, text: found, color: accent2}]` tints a row and tags it. `counter: {label: rows scanned, to: 10000000, at: 1.5, seconds: 3}` ticks a number up beside the table (below it in vertical). Text shrinks to fit, with a warning, and a warning says when a cue comes before its row appears.
 - **Array:** `items` (0 to 12 cells) and up to 40 `steps`, each with `at` and exactly one action: `insert: x` (a sorted insert: before the first cell that sorts after it, numbers by value and before text), `push: x` (at the end), `pop: front|back`, `mark: [1, 2]` (cell indices, with optional `text` and `color`), `window: [0, 2]` (a bracket over cells; a later `window` slides it, and it is trimmed if cells leave) and `unmark: true` (clears marks and the window). A step without `at` comes `stagger` (default 0.8) seconds after the one before; steps run in time order. The steps are replayed when the spec loads, so `scenes[2].steps[3].pop: array is empty at 2.4s` is an error before rendering.
+- **Subtitles:** see [Word-by-word subtitles](#word-by-word-subtitles).
 - **Contact sheet:** `render --contact-frames N` (1 to 8) writes `contact.png` with N stills per scene, one row per scene, to check that reveals progress and nothing overlaps. Default: two per scene.
 - **Unknown keys are errors:** a misspelled or extra key stops the render, for example `error: scenes[0].titel: unknown field for a title scene; allowed: caption, eyebrow, narration, ...`, instead of being silently ignored.
 - **Limits:** `limits.max_seconds` and `limits.max_scenes` are capped at 3600 and 1000, whatever a spec or config sets.

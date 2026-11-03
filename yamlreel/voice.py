@@ -209,6 +209,20 @@ def screen_text(sc: dict[str, Any]) -> str:
     return " ".join(seen)
 
 
+def narration_text(sc: dict[str, Any], vo: dict[str, Any]) -> str | None:
+    """The words spoken in this scene, or None when it is silent or has only a recording with no transcript.
+
+    One source of truth: speech synthesis and subtitles both read it, so a caption never differs from the voice
+    (`read_screen` included). With `narration_audio`, `narration` is the transcript of that recording."""
+    if sc.get("narration_audio"):
+        text = sc.get("narration")
+        return text if isinstance(text, str) and text.strip() else None
+    narration = sc.get("narration")
+    if narration is False or not (narration or vo.get("read_screen")):
+        return None
+    return narration or screen_text(sc) or None
+
+
 def narration_cache_key(server: VoiceServer, text: str, voice: str | None, language: str | None) -> str:
     """What a cached clip depends on: the server address, the voice, the language and the text. The client id
     only picks the voice when no `voice` is set (VoiceStudio binds it as a default profile)."""
@@ -242,10 +256,7 @@ def prepare_narration(spec: dict[str, Any], server: VoiceServer | None, cache: P
     for i, sc in enumerate(spec["scenes"]):
         if sc.get("narration_audio"):
             samples = read_wav(resolve_audio(sc["narration_audio"]))
-        elif sc.get("narration") is not False and (sc.get("narration") or vo.get("read_screen")):
-            text = sc.get("narration") or screen_text(sc)
-            if not text:
-                continue
+        elif (text := narration_text(sc, vo)) is not None:
             if server is None:
                 raise VoiceError(
                     f"scene {i} has narration but no voice server is configured. Set voice_server.url in your "

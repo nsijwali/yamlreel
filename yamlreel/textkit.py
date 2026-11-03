@@ -171,3 +171,42 @@ def split_count(text: str) -> CountParts:
     if abs(target) > MAX_COUNT_MAGNITUDE:
         raise ValueError("the number in value is too large to count")
     return CountParts(text[:m.start()], text[m.end():], target, decimals, "," in raw, raw.startswith("+"))
+
+
+@dataclass(frozen=True)
+class WordBox:
+    """One word placed by `layout_words`: its text and its box inside the laid-out block."""
+    text: str
+    x: float
+    y: float
+    w: float
+    h: float
+    line: int
+
+
+def layout_words(words: list[str], fnt, max_w: float, space: float | None = None,
+                 line_h: float | None = None) -> tuple[list[WordBox], float, float]:
+    """Place `words` on lines of at most `max_w` (greedy), each line centred. Returns (boxes, block width,
+    block height). A word wider than `max_w` gets a line of its own. Every box is `line_h` tall (default 1.28 em)
+    and the gap between words is `space` (default a quarter em)."""
+    size = float(getattr(fnt, "size", 20))
+    space = size * 0.25 if space is None else space
+    line_h = size * 1.28 if line_h is None else line_h
+    lines: list[list[tuple[str, float]]] = [[]]
+    used = 0.0
+    for w in words:
+        wl = float(fnt.getlength(w))
+        if lines[-1] and used + space + wl > max_w:
+            lines.append([])
+            used = 0.0
+        used += (space if lines[-1] else 0.0) + wl
+        lines[-1].append((w, wl))
+    widths = [sum(wl for _, wl in ln) + space * (len(ln) - 1) for ln in lines]
+    block_w = max(widths, default=0.0)
+    boxes: list[WordBox] = []
+    for n, (ln, lw) in enumerate(zip(lines, widths)):
+        x = (block_w - lw) / 2
+        for w, wl in ln:
+            boxes.append(WordBox(w, x, n * line_h, wl, line_h, n))
+            x += wl + space
+    return boxes, block_w, line_h * len(lines)
