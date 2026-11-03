@@ -395,3 +395,58 @@ def test_render_ducks_only_under_speech_and_keeps_the_constant_level_by_default(
         rms[duck] = [float(np.sqrt(np.mean(a[int(x * 8000):int(y * 8000)] ** 2))) for x, y in ((0.4, 1.2), (3.0, 4.5))]
     assert rms[True][1] > 2.0 * rms[False][1]                       # music back at full level after the speech
     assert rms[True][0] == pytest.approx(rms[False][0], rel=0.25)   # and the same level under it
+
+
+# --- old starter config (0.2.x wrote koto's bpm/root/scale) ----------------------------------------------
+
+OLD_CONFIG = "music:\n  style: koto\n  bpm: 72\n  root: D\n  scale: hirajoshi\n  seed: 7\n"
+
+
+def _old_cfg(tmp_path, text=OLD_CONFIG):
+    from yamlreel.config import load_config
+    f = tmp_path / "c.yaml"
+    f.write_text(text)
+    return load_config(explicit=f)
+
+
+def test_old_starter_config_does_not_force_koto_values_on_another_style(tmp_path):
+    m = validate({"scenes": [TITLE], "music": {"style": "lofi"}}, _old_cfg(tmp_path))["music"]
+    assert (m["bpm"], m["root"], m["scale"]) == (78, "D", "dorian")
+    assert m["_filled"] == ["bpm", "root", "scale"]
+
+
+def test_old_starter_config_with_the_music_override_gets_the_new_styles_defaults(tmp_path):
+    spec = validate({"scenes": [TITLE]}, _old_cfg(tmp_path))
+    assert (spec["music"]["bpm"], spec["music"]["scale"]) == (72, "hirajoshi")      # koto: unchanged
+    got = music.with_style(spec["music"], "lofi")
+    assert (got["style"], got["bpm"], got["root"], got["scale"]) == ("lofi", 78, "D", "dorian")
+    assert got["_filled"] == ["bpm", "root", "scale"] and "_config" not in got
+    assert music.with_style(spec["music"], "koto")["bpm"] == 72
+
+
+def test_a_config_with_its_own_matching_style_keeps_its_bpm(tmp_path):
+    cfg = _old_cfg(tmp_path, "music: {style: lofi, bpm: 90}\n")
+    m = validate({"scenes": [TITLE]}, cfg)["music"]
+    assert (m["style"], m["bpm"], m["root"], m["scale"], m["_filled"]) == ("lofi", 90, "D", "dorian", ["root", "scale"])
+    assert validate({"scenes": [TITLE], "music": {"style": "lofi"}}, cfg)["music"]["bpm"] == 90
+    assert validate({"scenes": [TITLE], "music": {"style": "pulse"}}, cfg)["music"]["bpm"] == music.STYLE_DEFAULTS["pulse"]["bpm"]
+    again = validate({"scenes": [TITLE], "music": m}, Config())["music"]
+    assert again == m
+
+
+def test_spec_authored_bpm_always_wins(tmp_path):
+    cfg = _old_cfg(tmp_path)
+    m = validate({"scenes": [TITLE], "music": {"style": "lofi", "bpm": 100}}, cfg)["music"]
+    assert (m["bpm"], m["root"], m["_filled"]) == (100, "D", ["root", "scale"])
+    assert music.with_style(validate({"scenes": [TITLE], "music": {"bpm": 100}}, cfg)["music"], "lofi")["bpm"] == 100
+
+
+def test_old_config_koto_output_is_unchanged(tmp_path):
+    old = validate({"scenes": [TITLE]}, _old_cfg(tmp_path))["music"]
+    new = validate({"scenes": [TITLE]}, Config())["music"]
+    assert {k: old[k] for k in ("style", "bpm", "root", "scale")} == {k: new[k] for k in ("style", "bpm", "root", "scale")}
+
+
+def test_config_marker_cannot_be_written_in_a_spec():
+    with pytest.raises(SpecError, match="_config is set by yamlreel"):
+        _spec_with(style="koto", _config={"style": "x", "keys": ["nope"]})

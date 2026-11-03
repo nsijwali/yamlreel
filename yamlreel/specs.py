@@ -68,6 +68,7 @@ MAX_THEMES = 100         # custom themes in one spec or config
 MAX_THEME_NAME = 60
 MAX_FORMATS = 3
 MAX_STEP_LABEL = 60      # characters in a scene's `step` label
+MAX_STEP_LABELS = 12     # distinct `step` labels in one spec (the badge draws one progress segment per label)
 NODE_SIZE = (16, 120)
 # Output frames over all formats: one hour at 60 fps, or two formats at 30 fps.
 MAX_FRAMES = 216_000
@@ -802,6 +803,11 @@ def _music(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any]
     filled = music.pop("_filled", [])
     if not isinstance(filled, list) or any(k not in STYLE_KEYS for k in filled):
         raise SpecError(f"{path}._filled is set by yamlreel and cannot be written in a spec")
+    from_config = music.pop("_config", None)   # set by validate(): keys a config (not the spec) wrote, and its style
+    if from_config is not None and not (
+            isinstance(from_config, dict) and set(from_config) == {"style", "keys"} and isinstance(from_config["style"], str)
+            and isinstance(from_config["keys"], list) and all(k in STYLE_KEYS for k in from_config["keys"])):
+        raise SpecError(f"{path}._config is set by yamlreel and cannot be written in a spec")
     _no_unknown(path, music, MUSIC_KEYS, "music")
     style = music.get("style")
     if not isinstance(style, str) or (style not in MUSIC_STYLES and not Path(style).suffix):
@@ -821,7 +827,29 @@ def _music(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any]
             music[key] = defaults[key]
             filled.append(key)
     music["_filled"] = sorted(set(filled), key=STYLE_KEYS.index)
+    if from_config and from_config["keys"]:
+        music["_config"] = from_config
     return music
+
+
+def _config_style_keys(base: dict[str, Any], raw: dict[str, Any], merged: dict[str, Any]) -> None:
+    """bpm/root/scale count as written by the author only when the spec's own `music` has them. A config's values
+    (the 0.2.x starter config wrote koto's) apply only under the style that config names; under any other style
+    they are dropped, so the style's own defaults land in `_filled`. A matching one is remembered in `_config`,
+    so `--music <other style>` can drop it later (music.with_style)."""
+    music, cfg_music, own = merged.get("music"), base.get("music"), raw.get("music")
+    if not (isinstance(music, dict) and isinstance(cfg_music, dict)) or "_config" in music:
+        return
+    own = own if isinstance(own, dict) else {}
+    keys = [k for k in STYLE_KEYS if k in cfg_music and k not in own]
+    if not keys:
+        return
+    cfg_style = cfg_music.get("style", DEFAULTS["music"]["style"])
+    if music.get("style") == cfg_style:
+        music["_config"] = {"style": cfg_style, "keys": keys}
+        return
+    for k in keys:
+        music.pop(k, None)
 
 
 def _meta(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any]:
@@ -927,6 +955,9 @@ def _scenes(path: str, v: Any, spec: dict[str, Any], env: _Env) -> list[dict[str
     if len(v) > env.max_scenes:
         raise SpecError(f"{len(v)} scenes; the limit is {env.max_scenes} ({env.note('max_scenes')})")
     out = [_scene(i, sc, env) for i, sc in enumerate(v)]
+    labels = {sc["step"] for sc in out if sc.get("step")}
+    if len(labels) > MAX_STEP_LABELS:
+        raise SpecError(f"{len(labels)} distinct step labels; the limit is {MAX_STEP_LABELS} (MAX_STEP_LABELS)")
     total = sum(sc["seconds"] for sc in out)
     if total > env.max_seconds:
         raise SpecError(f"total length {total:.0f}s; the limit is {_fmt(env.max_seconds)}s ({env.note('max_seconds')})")
@@ -975,6 +1006,7 @@ def validate(raw: Any, config: Config | None = None, base_dir: Path | None = Non
     if raw.get("subtitles") is True and isinstance(base.get("subtitles"), dict):
         del raw["subtitles"]  # `subtitles: true` means "on", so a config that already sets them keeps its settings
     spec: dict[str, Any] = merge(base, raw)
+    _config_style_keys(base, raw, spec)
     for key, default in DEFAULTS.items():
         spec.setdefault(key, copy.deepcopy(default))
     spec.setdefault("scenes", None)  # reported by the scenes check

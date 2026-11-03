@@ -217,7 +217,7 @@ speech ends (+0.2 s), as the takeaway. Scenes without narration behave as today.
 **Step badge.** New common field `step: "Token bucket"`. N is the number of distinct step labels in order, and n is
 this scene's ordinal (consecutive scenes may share a step). Timeline draws a top-centre badge `STEP n/N · LABEL`
 with an N-segment progress bar at 0.035H, clear of the diagram title at 0.09H. It warns when a top-left watermark
-wider than 0.3W would collide.
+wider than 0.3W would collide. A spec may use at most `MAX_STEP_LABELS = 12` distinct labels (SpecError beyond that); `make_badge` also draws one continuous bar when the segments would be under 2 px.
 
 **CTA end card.**
 ```yaml

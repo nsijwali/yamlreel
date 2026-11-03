@@ -342,3 +342,28 @@ def test_story_without_energy_or_duck_support_still_validates(monkeypatch):
     monkeypatch.setattr(story, "_supports", lambda: (False, False))
     _, spec = gen()
     assert "voiceover" not in spec and all("energy" not in s for s in spec["scenes"])
+
+
+def test_more_than_twelve_distinct_step_labels_is_a_spec_error():
+    ok = [{**T, "step": f"S{i}"} for i in range(badge_mod_limit())]
+    validate({"scenes": ok}, Config())
+    with pytest.raises(SpecError, match=r"13 distinct step labels; the limit is 12 \(MAX_STEP_LABELS\)"):
+        validate({"scenes": ok + [{**T, "step": "one too many"}]}, Config())
+    validate({"scenes": ok + [{**T, "step": "S0"}]}, Config())     # repeats do not count
+
+
+def badge_mod_limit():
+    from yamlreel.specs import MAX_STEP_LABELS
+    return MAX_STEP_LABELS
+
+
+@pytest.mark.parametrize("fmt", ["vertical", "landscape"])
+def test_make_badge_survives_more_steps_than_pixels(tmp_path, fmt):
+    tl = timeline(tmp_path, [T], fmt)
+    for total in (12, 60, 400):
+        b = badge_mod.make_badge(tl.ctx, total, total, "Many")
+        assert b.rgb.width > 0 and b.text == f"STEP {total}/{total} · MANY"
+    th = tl.ctx.theme
+    b = badge_mod.make_badge(tl.ctx, 200, 400, "Many")
+    y = b.rgb.height - 2
+    assert b.rgb.getpixel((2, y)) == th.accent and b.rgb.getpixel((b.rgb.width - 3, y)) == th.line

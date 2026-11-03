@@ -125,12 +125,18 @@ def write_wav(path: Path, samples: np.ndarray) -> Path:
 
 def with_style(music: dict, style: str) -> dict:
     """The spec's music settings with `style` swapped in (`--music lofi`). Only the keys the spec left to its
-    style (`_filled`) take the new style's defaults; ones the author wrote stay."""
+    style (`_filled`, or `_config` from a config of another style) take the new style's defaults; ones the author wrote stay."""
     out = dict(music)
     out["style"] = style
     defaults = STYLE_DEFAULTS.get(style, STYLE_DEFAULTS["koto"])
     for key in music.get("_filled", ()):
         out[key] = defaults[key]
+    cfg = music.get("_config")   # keys a config wrote for its own style; another style does not inherit them
+    if cfg and cfg["style"] != style:
+        for key in cfg["keys"]:
+            out[key] = defaults[key]
+        out["_filled"] = [k for k in ("bpm", "root", "scale") if k in set(out.get("_filled", ())) | set(cfg["keys"])]
+        del out["_config"]
     return out
 
 

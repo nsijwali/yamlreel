@@ -74,10 +74,16 @@ def make_badge(ctx: Ctx, n: int, total: int, label: str) -> Badge:
     seg_w = (w - (total - 1) * seg_gap) / total
     d_rgb, d_mask = ImageDraw.Draw(rgb), ImageDraw.Draw(mask)
     y0 = int(row_h + bar_gap)
-    for k in range(total):
-        x0 = k * (seg_w + seg_gap)
-        box = [round(x0), y0, round(x0 + seg_w) - 1, y0 + bar_h - 1]
-        d_rgb.rounded_rectangle(box, bar_h // 2, fill=th.accent if k < n else th.line)
-        d_mask.rounded_rectangle(box, bar_h // 2, fill=255)
+    if seg_w < 2:  # too many steps for separate segments: one bar, filled up to step n
+        for box, fill in (([0, y0, w - 1, y0 + bar_h - 1], th.line),
+                          ([0, y0, max(0, round(w * n / total) - 1), y0 + bar_h - 1], th.accent)):
+            d_rgb.rounded_rectangle(box, bar_h // 2, fill=fill)
+            d_mask.rounded_rectangle(box, bar_h // 2, fill=255)
+    else:
+        for k in range(total):
+            x0 = k * (seg_w + seg_gap)
+            box = [round(x0), y0, round(x0 + seg_w) - 1, y0 + bar_h - 1]
+            d_rgb.rounded_rectangle(box, bar_h // 2, fill=th.accent if k < n else th.line)
+            d_mask.rounded_rectangle(box, bar_h // 2, fill=255)
     xy = (int((ctx.W - w) / 2), int(ctx.H * TOP))
     return Badge(rgb, mask, xy, badge_text(n, total, label))
