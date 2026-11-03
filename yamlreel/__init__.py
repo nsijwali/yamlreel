@@ -1,3 +1,3 @@
 """yamlreel: render short videos from a YAML spec."""
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
