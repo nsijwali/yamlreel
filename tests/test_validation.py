@@ -81,6 +81,18 @@ def test_field_tables_cover_every_key_the_scenes_read():
         assert read <= table
 
 
+def test_nested_field_tables_cover_every_key_the_data_scenes_read():
+    from yamlreel.datascenes import ArrayScene, TableScene, array_states
+    for var, table in (("scan", TableScene.SCAN_FIELDS), ("h", TableScene.HIGHLIGHT_FIELDS),
+                       ("counter", TableScene.COUNTER_FIELDS)):
+        read = _literal_keys(TableScene.__init__, {var})
+        assert len(read) >= 3, f"{var}: the AST walk found {sorted(read)}; the guard would be vacuous"
+        assert read <= table, f"{var}: {sorted(read - table)}"
+    read = _literal_keys(array_states, {"step"})
+    assert {"text", "color", "mark", "window", "pop"} <= read and read <= ArrayScene.STEP_FIELDS
+    assert set(ArrayScene.STEP_FIELDS) >= {"at", "text", "color", "insert", "push", "pop", "mark", "unmark", "window"}
+
+
 def test_voice_screen_text_reads_only_known_fields():
     read = _literal_keys(voice.screen_text, {"sc"})
     known = set(Scene.COMMON_FIELDS).union(*(c.FIELDS for c in SCENE_TYPES.values()))
@@ -197,6 +209,8 @@ BASE_SCENES = {
     "code": {"type": "code", "code": "x = 1\ny = 2"},
     "diagram": {"type": "diagram", "nodes": NODES, "edges": [{"from": "a", "to": "b"}],
                 "flash": [{"node": "a", "at": 1}]},
+    "table": {"type": "table", "columns": ["id", "name"], "rows": [["1", "Ada"], ["2", "Lin"]]},
+    "array": {"type": "array", "items": ["a", "b"]},
 }
 
 
@@ -248,6 +262,23 @@ def test_type_confusion_every_scene_field(value):
     outcome({"scenes": [{**d, "nodes": [value]}]})
     outcome({"scenes": [{**d, "edges": [value]}]})
     outcome({"scenes": [{**d, "flash": [value]}]})
+    from yamlreel.datascenes import ArrayScene, TableScene
+    t, a = BASE_SCENES["table"], BASE_SCENES["array"]
+    for field in sorted(TableScene.SCAN_FIELDS):
+        outcome({"scenes": [{**t, "scan": {field: value}}]})
+    for field in sorted(TableScene.HIGHLIGHT_FIELDS):
+        outcome({"scenes": [{**t, "highlight": [{"row": 0, field: value}]}]})
+    for field in sorted(TableScene.COUNTER_FIELDS):
+        outcome({"scenes": [{**t, "counter": {"to": 5, field: value}}]})
+    for field in sorted(ArrayScene.STEP_FIELDS):
+        outcome({"scenes": [{**a, "steps": [{"push": "x", field: value}]}]})
+        outcome({"scenes": [{**a, "steps": [{"at": 1, "mark": [0], field: value}]}]})
+    for bad in (value, [value], [[value]]):
+        outcome({"scenes": [{**t, "rows": bad}]})
+        outcome({"scenes": [{**t, "columns": bad}]})
+        outcome({"scenes": [{**a, "steps": bad}]})
+        outcome({"scenes": [{**a, "steps": [{"window": bad}]}]})
+        outcome({"scenes": [{**a, "steps": [{"mark": bad}]}]})
 
 
 def test_every_table_field_has_a_checker_that_rejects_a_mapping():

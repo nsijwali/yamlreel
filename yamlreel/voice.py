@@ -198,7 +198,7 @@ def screen_text(sc: dict[str, Any]) -> str:
         parts = [sc.get("title"), *sc.get("items", [])]
     elif kind == "stat":
         parts = [sc.get("value"), sc.get("label")]
-    else:  # shot, code, diagram
+    else:  # shot, code, diagram, table, array: the title is the only prose; the data is read off the screen
         parts = [sc.get("title")]
     parts.append(sc.get("caption"))
     seen: list[str] = []

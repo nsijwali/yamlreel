@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, Callable, ClassVar
 
 from PIL import Image, ImageDraw
 
@@ -101,6 +101,18 @@ class Scene:
         self.ctx = ctx
         self.duration = float(spec["seconds"])
         self.caption = spec.get("caption")
+        self._static: dict[str, Image.Image] = {}
+
+    def static_layer(self, key: str, draw: Callable[[Image.Image], None]) -> Image.Image:
+        """A fresh copy of the background with `draw(image)` applied to it. `draw` runs once per scene and key and
+        its result is kept, so chrome that never changes (a table frame, a track) is not redrawn on every frame.
+        Callers get a copy and may draw on it."""
+        base = self._static.get(key)
+        if base is None:
+            base = self.ctx.background()
+            draw(base)
+            self._static[key] = base
+        return base.copy()
 
     def frame(self, t: float) -> Image.Image:  # pragma: no cover
         raise NotImplementedError

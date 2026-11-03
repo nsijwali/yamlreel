@@ -84,6 +84,9 @@ def test_all_scene_types_render_at_the_right_size(fmt, tmp_path):
         {"type": "diagram", "nodes": [{"id": "a", "label": "A", "x": .2, "y": .5},
                                       {"id": "b", "label": "B", "x": .8, "y": .5, "kind": "db"}],
          "edges": [{"from": "a", "to": "b", "label": "go"}], "flash": [{"node": "b", "at": 1, "text": "hot"}]},
+        {"type": "table", "columns": ["id", "name"], "rows": [["1", "Ada"], ["2", "Lin"]],
+         "scan": True, "counter": {"to": 99}, "highlight": [{"row": 1, "text": "hit"}]},
+        {"type": "array", "items": ["a", "b"], "steps": [{"at": 1, "insert": "ab"}, {"at": 2, "window": [0, 1]}]},
         theme="sumi")
     tl = Timeline(spec, fmt, tmp_path, scale=0.25)
     W, H = tl.ctx.W, tl.ctx.H

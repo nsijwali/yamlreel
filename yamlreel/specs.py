@@ -17,6 +17,8 @@ from . import shots
 from .config import (DEFAULTS, HARD_LIMITS, SHARED_KEYS, Config, _absolutize, clamp_limits, describe_key,
                      describe_value, merge, normalize_music)
 from .config import yaml_problem as _yaml_problem
+from .datascenes import (ARRAY_ACTIONS, MAX_CELL_CHARS, MAX_CELLS, MAX_STEPS, MAX_TABLE_COLS, MAX_TABLE_ROWS,
+                         POP_SIDES, ArrayScene, ArrayStepError, TableScene, array_states)
 from .music import NOTE_OFFSETS, SCALES
 from .scenes import SCENE_TYPES, DiagramScene, Scene
 from .textkit import MAX_COUNT_MAGNITUDE, split_count
@@ -25,7 +27,7 @@ from .theme import get_theme
 FORMATS = {"landscape": (1920, 1080), "vertical": (1080, 1920), "square": (1080, 1080)}
 
 DEFAULT_SECONDS = {"title": 3.0, "type": 3.0, "shot": 4.0, "diagram": 7.0,
-                   "bullets": 5.0, "code": 6.0, "stat": 3.5}
+                   "bullets": 5.0, "code": 6.0, "stat": 3.5, "table": 8.0, "array": 8.0}
 REQUIRED = {
     "title": ["title"],
     "type": ["text"],
@@ -34,6 +36,8 @@ REQUIRED = {
     "bullets": ["items"],
     "code": ["code"],
     "stat": ["value"],
+    "table": ["columns", "rows"],
+    "array": ["items"],
 }
 MUSIC_STYLES = {"koto", "none"}
 TRANSITIONS = ("fade", "slide", "zoom", "cut")
@@ -427,6 +431,144 @@ def _count(path: str, v: Any, sc: dict[str, Any], env: _Env) -> dict[str, Any] |
                         if "seconds" in count else None)}
 
 
+def _cell_text(path: str, v: Any) -> str:
+    """One table or array cell. Quote a number in YAML to keep its formatting (`"007"`, `"1.50"`)."""
+    if v is None or isinstance(v, (list, dict)):
+        raise SpecError(f"{path} must be text")
+    out = _text(path, v, MAX_CELL_CHARS, "MAX_CELL_CHARS")
+    if not out.strip():
+        raise SpecError(f"{path} must not be empty")
+    return out
+
+
+def _columns(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[str]:
+    return [_cell_text(f"{path}[{n}]", x) for n, x in enumerate(_list(path, v, 1, MAX_TABLE_COLS, "MAX_TABLE_COLS"))]
+
+
+def _rows(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[list[str]]:
+    width = len(sc["columns"])  # `columns` is checked first
+    out = []
+    for n, row in enumerate(_list(path, v, 1, MAX_TABLE_ROWS, "MAX_TABLE_ROWS")):
+        p = f"{path}[{n}]"
+        if not isinstance(row, list):
+            raise SpecError(f"{p} must be a list of {width} cells, one per column")
+        if len(row) != width:
+            raise SpecError(f"{p} must have {width} cell{'s' if width != 1 else ''} (one per column), got {len(row)}")
+        out.append([_cell_text(f"{p}[{j}]", x) for j, x in enumerate(row)])
+    return out
+
+
+def _reveal(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
+    return _choice(path, v, TableScene.REVEALS)
+
+
+def _scan(path: str, v: Any, sc: dict[str, Any], env: _Env) -> dict[str, Any]:
+    """`true` (a scan from the first row to the last), or {at, per_row, stop, color}."""
+    scan = {} if v is True else dict(_mapping(path, v))
+    if v is not True and not scan:
+        raise SpecError(f"{path} must be true or a mapping with at, per_row, stop or color")
+    _no_unknown(path, scan, TableScene.SCAN_FIELDS, "a table scan")
+    rows = len(sc["rows"])
+    out: dict[str, Any] = {"stop": rows - 1}
+    if "at" in scan:
+        out["at"] = _number(f"{path}.at", scan["at"], 0, MAX_CUE_SECONDS)
+    if "per_row" in scan:
+        out["per_row"] = _number(f"{path}.per_row", scan["per_row"], 0.05, 3)
+    if "stop" in scan:
+        out["stop"] = _number(f"{path}.stop", scan["stop"], 0, rows - 1, integer=True)
+    if "color" in scan:
+        out["color"] = _choice(f"{path}.color", scan["color"], COLOR_NAMES)
+    return out
+
+
+def _table_highlight(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
+    rows = len(sc["rows"])
+    out = []
+    for n, h in enumerate(_list(path, v, 0, MAX_TABLE_ROWS, "MAX_TABLE_ROWS")):
+        p = f"{path}[{n}]"
+        h = _mapping(p, h)
+        _no_unknown(p, h, TableScene.HIGHLIGHT_FIELDS, "a table highlight")
+        if "row" not in h:
+            raise SpecError(f"{p}: needs row")
+        item: dict[str, Any] = {"row": _number(f"{p}.row", h["row"], 0, rows - 1, integer=True)}
+        if "at" in h:
+            item["at"] = _number(f"{p}.at", h["at"], 0, MAX_CUE_SECONDS)
+        if "text" in h:
+            item["text"] = _text(f"{p}.text", h["text"], MAX_CELL_CHARS, "MAX_CELL_CHARS")
+        if "color" in h:
+            item["color"] = _choice(f"{p}.color", h["color"], COLOR_NAMES)
+        out.append(item)
+    return out
+
+
+def _counter(path: str, v: Any, sc: dict[str, Any], env: _Env) -> dict[str, Any]:
+    counter = dict(_mapping(path, v))
+    _no_unknown(path, counter, TableScene.COUNTER_FIELDS, "a table counter")
+    if "to" not in counter:
+        raise SpecError(f"{path}: needs to")
+    out: dict[str, Any] = {"to": _number(f"{path}.to", counter["to"], -MAX_COUNT_MAGNITUDE, MAX_COUNT_MAGNITUDE)}
+    if "label" in counter:
+        out["label"] = _text(f"{path}.label", counter["label"], MAX_CELL_CHARS, "MAX_CELL_CHARS")
+    if "at" in counter:
+        out["at"] = _number(f"{path}.at", counter["at"], 0, MAX_CUE_SECONDS)
+    if "seconds" in counter:
+        out["seconds"] = _number(f"{path}.seconds", counter["seconds"], 0.1, env.max_seconds)
+    return out
+
+
+def _cells(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[str]:
+    return [_cell_text(f"{path}[{n}]", x) for n, x in enumerate(_list(path, v, 0, MAX_CELLS, "MAX_CELLS"))]
+
+
+def _step(path: str, st: Any) -> dict[str, Any]:
+    st = _mapping(path, st)
+    _no_unknown(path, st, ArrayScene.STEP_FIELDS, "an array step")
+    given = [a for a in ARRAY_ACTIONS if a in st]
+    if len(given) != 1:
+        found = f", found {' and '.join(given)}" if given else ""
+        raise SpecError(f"{path}: needs exactly one of {', '.join(ARRAY_ACTIONS)}{found}")
+    action = given[0]
+    out: dict[str, Any] = {}
+    if "at" in st:
+        out["at"] = _number(f"{path}.at", st["at"], 0, MAX_CUE_SECONDS)
+    p = f"{path}.{action}"
+    if action in ("insert", "push"):
+        out[action] = _cell_text(p, st[action])
+    elif action == "pop":
+        out["pop"] = _choice(p, st["pop"], POP_SIDES)
+    elif action == "mark":
+        idx = _list(p, st["mark"], 1, MAX_CELLS, "MAX_CELLS")
+        out["mark"] = [_number(f"{p}[{n}]", x, 0, MAX_CELLS - 1, integer=True) for n, x in enumerate(idx)]
+    elif action == "unmark":
+        if st["unmark"] is not True:
+            raise SpecError(f"{p} must be true")
+        out["unmark"] = True
+    else:
+        w = st["window"]
+        if not isinstance(w, list) or len(w) != 2:
+            raise SpecError(f"{p} must be [first, last] cell indices")
+        lo, hi = (_number(f"{p}[{n}]", x, 0, MAX_CELLS - 1, integer=True) for n, x in enumerate(w))
+        if lo > hi:
+            raise SpecError(f"{p} must be [first, last] with first <= last")
+        out["window"] = [lo, hi]
+    for key in ("text", "color"):
+        if key in st:
+            if action not in ("mark", "window"):
+                raise SpecError(f"{path}.{key}: only a mark or window step has {key}")
+            out[key] = (_text(f"{path}.text", st[key], MAX_CELL_CHARS, "MAX_CELL_CHARS") if key == "text"
+                        else _choice(f"{path}.color", st[key], COLOR_NAMES))
+    return out
+
+
+def _steps(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
+    steps = [_step(f"{path}[{n}]", st) for n, st in enumerate(_list(path, v, 0, MAX_STEPS, "MAX_STEPS"))]
+    try:  # replay the steps now, so a pop on an empty array or a window past the cells fails at load time
+        array_states({"items": sc["items"], "steps": steps, "stagger": sc.get("stagger")})
+    except ArrayStepError as e:
+        raise SpecError(f"{path.rsplit('.', 1)[0]}.{e}") from e
+    return steps
+
+
 # One checker per scene field (common and per type). Each returns the normalised value.
 FIELD_CHECKS: dict[str, Checker] = {
     "type": _scene_type,
@@ -463,9 +605,21 @@ FIELD_CHECKS: dict[str, Checker] = {
     "edges": _edges,
     "flash": _flash,
     "node_size": lambda path, v, sc, env: _number(path, v, *NODE_SIZE),
+    "columns": _columns,
+    "rows": _rows,
+    "reveal": _reveal,
+    "scan": _scan,
+    "counter": _counter,
+    "steps": _steps,
+}
+# Fields whose meaning depends on the scene type get their own checker; it wins over FIELD_CHECKS.
+TYPE_CHECKS: dict[str, dict[str, Checker]] = {
+    "table": {"highlight": _table_highlight},
+    "array": {"items": _cells},
 }
 # Fields whose checker reads another field of the same scene, so that one is checked first.
 _CHECKED_FIRST = ("code", "nodes")
+_CHECKED_FIRST_BY_TYPE = {"table": ("columns", "rows"), "array": ("items", "stagger")}
 
 
 def _scene(i: int, raw: Any, env: _Env) -> dict[str, Any]:
@@ -480,9 +634,11 @@ def _scene(i: int, raw: Any, env: _Env) -> dict[str, Any]:
         raise SpecError(f"{path} ({t}): missing {', '.join(missing)}")
     sc = dict(raw)
     sc.setdefault("seconds", DEFAULT_SECONDS[t])
-    for k in sorted(sc, key=lambda k: k not in _CHECKED_FIRST):
+    first = _CHECKED_FIRST + _CHECKED_FIRST_BY_TYPE.get(t, ())
+    for k in sorted(sc, key=lambda k: first.index(k) if k in first else len(first)):
         if k != "type":
-            sc[k] = FIELD_CHECKS[k](f"{path}.{k}", sc[k], sc, env)
+            check = TYPE_CHECKS.get(t, {}).get(k) or FIELD_CHECKS[k]
+            sc[k] = check(f"{path}.{k}", sc[k], sc, env)
     if t == "shot":
         sc.setdefault("zoom", [1.0, 1.0])
         sc.setdefault("click", [])

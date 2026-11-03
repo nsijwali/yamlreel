@@ -100,6 +100,7 @@ yamlreel render cache-stampede-45s.yaml --no-voice
 | --- | --- |
 | [`examples/cache-stampede-45s.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/cache-stampede-45s.yaml) | A 45-second system-design explainer with a diagram, code and a narrated script. |
 | [`examples/motion-demo.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/motion-demo.yaml) | Scene transitions, staggered bullets and counting-up numbers. |
+| [`examples/index-scan.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/index-scan.yaml) | A table that is scanned row by row, a sorted index taking inserts, and a queue. |
 
 It is narrated; add `--no-voice` to render it with music only. For more starting points, run
 `yamlreel init` with the `system-design`, `project` or `code-tip` template.
@@ -143,6 +144,8 @@ scenes:
 | `bullets` | points that appear one at a time | `title`, `items`, `stagger` |
 | `code` | code typed on screen, with highlighted lines | `code`, `highlight`, `title` |
 | `stat` | one big number or phrase, optionally counting up | `value`, `label`, `eyebrow`, `count` |
+| `table` | rows that appear one by one, a scan bar walking down them, highlighted rows and a ticking counter | `title`, `columns`, `rows`, `stagger`, `reveal`, `scan`, `highlight`, `counter` |
+| `array` | one row of cells that take sorted inserts, pushes and pops, marks and a sliding window | `title`, `items`, `steps`, `stagger` |
 | `diagram` | boxes and arrows that appear in order, packets flowing, nodes flashing | `nodes`, `edges`, `flash`, `title` |
 | `shot` | a screenshot of a URL or an image, with a slow camera move | `source`, `zoom`, `focus`, `fit`, `click`, `scroll_y` |
 
@@ -168,6 +171,8 @@ scenes: [...]
 - **Transitions:** `transition` at the top sets how every scene enters; a scene's own `transition` overrides it, and a field it leaves out (`type` or `seconds`) comes from the top-level one. A transition never lasts longer than its scene. `fade` cross-fades, `slide` pushes the old scene out to the left, `zoom` settles the new scene in from slightly larger, `cut` switches at once. `seconds` is 0.1 to 1.0 (default 0.25); a scene's length never changes.
 - **Stagger:** `stagger: 0.7` on a `bullets` scene sets the seconds between bullets (0.1 to 3). Without it the spacing is worked out from the scene length.
 - **Count-up:** `count: true` on a `stat` scene counts the one number in `value` up from 0 over 60% of the scene; `count: {from: 0, seconds: 2.5}` sets both. Prefix, suffix, thousands separators and decimals are kept, and the scene ends on exactly the `value` text. `value` must hold exactly one number.
+- **Table:** `columns` (1 to 6) and `rows` (1 to 12, each with one cell per column, cells up to 40 characters; quote a number to keep its formatting). Rows appear `stagger` seconds apart (default 0.4; `reveal: all` shows them at once). `scan: {at: 1.5, per_row: 0.3, stop: 4, color: accent}` walks a bar down from the first row and stays on row `stop` (rows count from 0; `scan: true` walks to the last row). `highlight: [{row: 4, at: 4.0, text: found, color: accent2}]` tints a row and tags it. `counter: {label: rows scanned, to: 10000000, at: 1.5, seconds: 3}` ticks a number up beside the table (below it in vertical). Text shrinks to fit, with a warning, and a warning says when a cue comes before its row appears.
+- **Array:** `items` (0 to 12 cells) and up to 40 `steps`, each with `at` and exactly one action: `insert: x` (a sorted insert: before the first cell that sorts after it, numbers by value and before text), `push: x` (at the end), `pop: front|back`, `mark: [1, 2]` (cell indices, with optional `text` and `color`), `window: [0, 2]` (a bracket over cells; a later `window` slides it, and it is trimmed if cells leave) and `unmark: true` (clears marks and the window). A step without `at` comes `stagger` (default 0.8) seconds after the one before; steps run in time order. The steps are replayed when the spec loads, so `scenes[2].steps[3].pop: array is empty at 2.4s` is an error before rendering.
 - **Contact sheet:** `render --contact-frames N` (1 to 8) writes `contact.png` with N stills per scene, one row per scene, to check that reveals progress and nothing overlaps. Default: two per scene.
 - **Unknown keys are errors:** a misspelled or extra key stops the render, for example `error: scenes[0].titel: unknown field for a title scene; allowed: caption, eyebrow, narration, ...`, instead of being silently ignored.
 - **Limits:** `limits.max_seconds` and `limits.max_scenes` are capped at 3600 and 1000, whatever a spec or config sets.

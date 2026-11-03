@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 from PIL import Image, ImageDraw, ImageFilter
 
+from .datascenes import ArrayScene, TableScene
 from .scenebase import Ctx, Scene, _appear
 from .shots import load_shot
 from .textkit import TextBlock, blit, ease_in_out, ease_out, lerp_color, make_block, split_count
@@ -522,7 +523,8 @@ class DiagramScene(Scene):
 
 
 SCENE_TYPES = {"title": TitleScene, "type": TypeScene, "shot": ShotScene, "diagram": DiagramScene,
-               "bullets": BulletsScene, "code": CodeScene, "stat": StatScene}
+               "bullets": BulletsScene, "code": CodeScene, "stat": StatScene, "table": TableScene,
+               "array": ArrayScene}
 
 
 def build_scene(spec: dict[str, Any], ctx: Ctx) -> Scene:
