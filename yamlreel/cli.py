@@ -1,4 +1,4 @@
-"""Command line interface: yamlreel render|validate|init|config|music."""
+"""Command line interface: yamlreel render|validate|init|story|config|music."""
 from __future__ import annotations
 
 import argparse
@@ -10,12 +10,16 @@ from pathlib import Path
 import yaml
 
 from . import __version__, legacy
+from . import music as music_mod
+from . import story as story_mod
+from . import subtitles as subs_mod
+from . import voice as voice_mod
 from .config import CONFIG_FILENAME, config_base, Config, ConfigError, load_config, user_config_path
 from .voice import VoiceError, VoiceServer
-from .render import RenderError, Runtime, render, share_copy
+from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, render, share_copy
 from .safety import UnsafeInput
 from .shots import CaptureError
-from .specs import FORMATS, SpecError, check_frame_budget, load_spec
+from .specs import FORMATS, MUSIC_STYLES, SpecError, check_frame_budget, load_spec
 from .theme import FontError, set_font_dirs
 
 
@@ -33,7 +37,7 @@ def _config(args: argparse.Namespace) -> Config:
 
 def _runtime(spec: dict, cfg: Config, music_override: str | None = None, no_voice: bool = False) -> Runtime:
     roots = [Path(spec["_dir"]), *[p.parent for p in cfg.sources], *cfg.allow_paths]
-    if music_override and music_override not in ("koto", "none"):
+    if music_override and music_override not in MUSIC_STYLES:
         roots.append(Path(music_override).expanduser().resolve().parent)  # named on the command line: trusted
     voice = VoiceServer(**cfg.voice_server) if cfg.voice_server and not no_voice else None
     return Runtime(roots=roots, allow_private_hosts=cfg.allow_private_hosts, chromium=cfg.chromium_path, voice=voice)
@@ -58,7 +62,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
     cfg = _config(args)
     spec = load_spec(args.spec, cfg)
     total = sum(s["seconds"] for s in spec["scenes"])
-    print(f"ok: {len(spec['scenes'])} scenes, {total:.1f}s, theme={spec['theme']}, formats={spec['formats']}")
+    vo = spec.get("voiceover") or {}
+    narrated = [sc for sc in spec["scenes"] if sc.get("narration_audio") or voice_mod.narration_text(sc, vo)]
+    subtitled = sum(1 for sc in narrated if subs_mod.scene_settings(spec, sc) is not None
+                    and (sc.get("narration_words") or voice_mod.narration_text(sc, vo)))
+    print(f"ok: {len(spec['scenes'])} scenes, {total:.1f}s, theme={spec['theme']}, formats={spec['formats']}, "
+          f"narrated={len(narrated)}, subtitled={subtitled}")
     return 0
 
 
@@ -81,12 +90,14 @@ def cmd_render(args: argparse.Namespace) -> int:
         raise SpecError("--fps must be an integer between 1 and 60")
     fps = 12 if args.preview else (args.fps or int(spec["fps"]))
     check_frame_budget(sum(s["seconds"] for s in spec["scenes"]), fps, len(formats))
+    if args.contact_frames is not None and not 1 <= args.contact_frames <= MAX_CONTACT_FRAMES:
+        raise SpecError(f"--contact-frames must be an integer between 1 and {MAX_CONTACT_FRAMES}")
     rt = _runtime(spec, cfg, args.music, no_voice=args.no_voice)
     results = {}
     for fmt in formats:
         print(f"rendering {fmt} ...", flush=True)
         results[fmt] = render(spec, fmt, out_dir, fps=fps, scale=scale, music_override=args.music, contact=True, runtime=rt,
-                               n_formats=len(formats))
+                               n_formats=len(formats), contact_frames=args.contact_frames)
     total = next(iter(results.values()))["seconds"]
     text, warns = share_copy(spec, total, formats)
     (out_dir / "share-copy.txt").write_text(text, encoding="utf-8")
@@ -118,6 +129,21 @@ def cmd_init(args: argparse.Namespace) -> int:
     return _copy_template(args.template, Path(args.dest), args.force)
 
 
+def cmd_story(args: argparse.Namespace) -> int:
+    src = Path(args.outline)
+    dest = Path(args.out) if args.out else src.with_name(f"{src.stem}.spec.yaml")
+    if dest.exists() and not args.force:
+        print(f"{dest} exists; pass --force to overwrite", file=sys.stderr)
+        return 2
+    outline = story_mod.load_outline(src)
+    text = story_mod.generate(outline, src.name, theme=args.theme, fmt=args.format)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(text, encoding="utf-8")
+    print(f"wrote {dest} ({len(outline['steps'])} steps); fill in the TODO placeholders, then: "
+          f"yamlreel render {dest} --preview --no-voice")
+    return 0
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     if args.action == "init":
         dest = user_config_path() if args.user else Path(CONFIG_FILENAME)
@@ -137,8 +163,15 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 def cmd_music(args: argparse.Namespace) -> int:
-    from . import music
-    wav = music.write_wav(Path(args.out), music.compose(args.seconds, args.bpm, args.root, args.scale, args.seed))
+    music = music_mod
+    defaults = music.STYLE_DEFAULTS[args.style]
+    bpm = args.bpm if args.bpm is not None else defaults["bpm"]
+    root = args.root or defaults["root"]
+    scale = args.scale or defaults["scale"]
+    try:
+        wav = music.write_wav_stream(Path(args.out), music.blocks(args.style, args.seconds, bpm, root, scale, args.seed))
+    except ValueError as e:
+        raise SystemExit(f"error: {e}")
     print(f"wrote {wav}")
     return 0
 
@@ -164,27 +197,37 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("spec")
     r.add_argument("--out", help="output folder (default: output_dir from config)")
     r.add_argument("--format", choices=[*FORMATS, "all"], help="override the spec's formats")
-    r.add_argument("--music", help="koto, none, or a path to an audio file (overrides the spec)")
+    r.add_argument("--music", help="a music style (koto, ambient, lofi, pulse, piano), none, or a path to an audio file (overrides the spec)")
     r.add_argument("--fps", type=int, help="frames per second, 1-60 (default: fps from config)")
     r.add_argument("--no-voice", action="store_true",
                    help="skip all narration (music only); no text-to-speech server needed")
     r.add_argument("--preview", action="store_true", help="half size, 12 fps: fast look at timing and layout")
+    r.add_argument("--contact-frames", type=int, metavar="N",
+                   help="stills per scene on the contact sheet, 1-8 (default: 2); one row per scene")
     r.set_defaults(fn=cmd_render)
     i = sub.add_parser("init", help="write a starter spec")
     i.add_argument("template", help=f"one of: {', '.join(_templates())}")
     i.add_argument("dest")
     i.add_argument("--force", action="store_true")
     i.set_defaults(fn=cmd_init)
+    st = sub.add_parser("story", help="turn an outline (hook, problem, steps, question) into a starter spec")
+    st.add_argument("outline", help="the outline YAML")
+    st.add_argument("--out", help="where to write the spec (default: <outline>.spec.yaml next to the outline)")
+    st.add_argument("--theme", help="theme name to put in the spec")
+    st.add_argument("--format", choices=list(FORMATS), help="the one format to put in the spec")
+    st.add_argument("--force", action="store_true", help="overwrite an existing file")
+    st.set_defaults(fn=cmd_story)
     c = sub.add_parser("config", parents=[common], help="show the effective config, or write a starter config file")
     c.add_argument("action", choices=["show", "init"])
     c.add_argument("--user", action="store_true", help="with init: write the user config (~/.config/yamlreel/config.yaml)")
     c.add_argument("--force", action="store_true")
     c.set_defaults(fn=cmd_config)
-    m = sub.add_parser("music", help="generate the koto-style track on its own")
+    m = sub.add_parser("music", help="generate a music track on its own")
+    m.add_argument("--style", choices=sorted(music_mod.STYLE_DEFAULTS), default="koto")
     m.add_argument("--seconds", type=float, default=20)
-    m.add_argument("--bpm", type=float, default=72)
-    m.add_argument("--root", default="D")
-    m.add_argument("--scale", default="hirajoshi")
+    m.add_argument("--bpm", type=float, help="default: the style's own")
+    m.add_argument("--root", help="default: the style's own")
+    m.add_argument("--scale", help="default: the style's own")
     m.add_argument("--seed", type=int, default=7)
     m.add_argument("--out", default="music.wav")
     m.set_defaults(fn=cmd_music)

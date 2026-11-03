@@ -1,0 +1,33 @@
+# Music styles, per-scene energy and ducking. Swap the style on the command line to compare them:
+#   yamlreel render examples/music-styles.yaml --out out --preview --music piano
+# The music is quiet and sparse in the intro, builds through the middle and settles at the end. With `duck: true`
+# it drops under the narration only while someone is speaking (add --no-voice for music alone).
+meta:
+  title: A queue absorbs a burst
+  tags: [queues, backpressure]
+theme: midnight
+formats: [vertical]
+music: {style: lofi, seed: 7}
+voiceover: {duck: true, music_level: 0.35}
+scenes:
+  - type: title
+    title: A queue absorbs a burst
+    seconds: 4
+    energy: low
+    narration: A queue lets a fast sender and a slow worker live together.
+  - type: bullets
+    title: What happens in a burst
+    items: [Requests arrive faster than workers finish, The queue grows instead of dropping them, Workers drain it at their own pace]
+    seconds: 7
+    energy: mid
+    narration: Requests arrive faster than the workers finish. The queue grows instead of dropping them, and the workers drain it at their own pace.
+  - type: stat
+    value: "10x"
+    label: burst size the queue can absorb
+    seconds: 5
+    energy: high
+    narration: Ten times the normal rate is fine, as long as the burst ends.
+  - type: title
+    title: Watch the depth, not the rate
+    seconds: 4
+    energy: low

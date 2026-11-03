@@ -29,18 +29,20 @@ MAX_CONFIG_BYTES = 256 * 1024
 CONFIG_FILENAME = "yamlreel.config.yaml"
 
 # keys any config layer (and the spec) may set
-SHARED_KEYS = {"theme", "themes", "formats", "watermark", "music", "meta", "poster", "fps", "output_dir", "limits", "voiceover"}
+SHARED_KEYS = {"theme", "themes", "formats", "watermark", "music", "meta", "poster", "fps", "output_dir", "limits", "voiceover", "transition", "subtitles"}
 # keys only the user config / CLI may set (they widen access)
 TRUSTED_KEYS = {"allow_paths", "allow_private_hosts", "chromium_path", "font_dir", "voice_server"}
 
 DEFAULTS: dict[str, Any] = {
     "theme": "sumi",
     "formats": ["landscape"],
-    "music": {"style": "koto", "bpm": 72, "root": "D", "scale": "hirajoshi", "seed": 7, "volume": 0.9, "snap": False},
+    "music": {"style": "koto", "seed": 7, "volume": 0.9, "snap": False},   # bpm, root and scale come from the style (music.STYLE_DEFAULTS)
     "meta": {"tags": [], "links": [], "credits": []},
     "fps": 30,
     "output_dir": "yamlreel-output",
     "limits": {"max_seconds": 600, "max_scenes": 200},
+    "transition": {"type": "fade", "seconds": 0.25},
+    "subtitles": False,
 }
 HARD_LIMITS = {"max_seconds": 3600, "max_scenes": 1000}
 MAX_CLIENT_ID_CHARS = 200

@@ -58,7 +58,7 @@ def _scene_reads(cls) -> set[str]:
     tree = ast.parse(textwrap.dedent(inspect.getsource(cls.__init__)))
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            helper = getattr(scenes_mod, node.func.id, None)
+            helper = getattr(sys.modules[cls.__module__], node.func.id, None)
             if inspect.isfunction(helper) and "spec" in inspect.signature(helper).parameters:
                 read |= _literal_keys(helper, {"spec"})
     return read
@@ -79,6 +79,18 @@ def test_field_tables_cover_every_key_the_scenes_read():
         read = _literal_keys(DiagramScene.__init__, {var})
         assert len(read) >= 3, f"{var}: the AST walk found {sorted(read)}; the guard would be vacuous"
         assert read <= table
+
+
+def test_nested_field_tables_cover_every_key_the_data_scenes_read():
+    from yamlreel.datascenes import ArrayScene, TableScene, array_states
+    for var, table in (("scan", TableScene.SCAN_FIELDS), ("h", TableScene.HIGHLIGHT_FIELDS),
+                       ("counter", TableScene.COUNTER_FIELDS)):
+        read = _literal_keys(TableScene.__init__, {var})
+        assert len(read) >= 3, f"{var}: the AST walk found {sorted(read)}; the guard would be vacuous"
+        assert read <= table, f"{var}: {sorted(read - table)}"
+    read = _literal_keys(array_states, {"step"})
+    assert {"text", "color", "mark", "window", "pop"} <= read and read <= ArrayScene.STEP_FIELDS
+    assert set(ArrayScene.STEP_FIELDS) >= {"at", "text", "color", "insert", "push", "pop", "mark", "unmark", "window"}
 
 
 def test_voice_screen_text_reads_only_known_fields():
@@ -197,6 +209,9 @@ BASE_SCENES = {
     "code": {"type": "code", "code": "x = 1\ny = 2"},
     "diagram": {"type": "diagram", "nodes": NODES, "edges": [{"from": "a", "to": "b"}],
                 "flash": [{"node": "a", "at": 1}]},
+    "table": {"type": "table", "columns": ["id", "name"], "rows": [["1", "Ada"], ["2", "Lin"]]},
+    "array": {"type": "array", "items": ["a", "b"]},
+    "cta": {"type": "cta", "question": "Which one?", "answers": ["x", "y"]},
 }
 
 
@@ -248,6 +263,23 @@ def test_type_confusion_every_scene_field(value):
     outcome({"scenes": [{**d, "nodes": [value]}]})
     outcome({"scenes": [{**d, "edges": [value]}]})
     outcome({"scenes": [{**d, "flash": [value]}]})
+    from yamlreel.datascenes import ArrayScene, TableScene
+    t, a = BASE_SCENES["table"], BASE_SCENES["array"]
+    for field in sorted(TableScene.SCAN_FIELDS):
+        outcome({"scenes": [{**t, "scan": {field: value}}]})
+    for field in sorted(TableScene.HIGHLIGHT_FIELDS):
+        outcome({"scenes": [{**t, "highlight": [{"row": 0, field: value}]}]})
+    for field in sorted(TableScene.COUNTER_FIELDS):
+        outcome({"scenes": [{**t, "counter": {"to": 5, field: value}}]})
+    for field in sorted(ArrayScene.STEP_FIELDS):
+        outcome({"scenes": [{**a, "steps": [{"push": "x", field: value}]}]})
+        outcome({"scenes": [{**a, "steps": [{"at": 1, "mark": [0], field: value}]}]})
+    for bad in (value, [value], [[value]]):
+        outcome({"scenes": [{**t, "rows": bad}]})
+        outcome({"scenes": [{**t, "columns": bad}]})
+        outcome({"scenes": [{**a, "steps": bad}]})
+        outcome({"scenes": [{**a, "steps": [{"window": bad}]}]})
+        outcome({"scenes": [{**a, "steps": [{"mark": bad}]}]})
 
 
 def test_every_table_field_has_a_checker_that_rejects_a_mapping():
@@ -620,7 +652,8 @@ def test_a_music_path_string_in_a_config_is_relative_to_the_config_folder(tmp_pa
     cfg_file.write_text("music: track.mp3\n")
     cfg = load_config(explicit=cfg_file)
     assert cfg.data["music"]["style"] == str((tmp_path / "sub").resolve() / "track.mp3")
-    assert cfg.data["music"]["bpm"] == 72  # the other settings are still the defaults
+    assert "bpm" not in cfg.data["music"]  # bpm, root and scale come from the style when the spec is validated
+    assert validate({"scenes": [TITLE]}, cfg)["music"]["bpm"] == 72  # koto's, since the style is an audio file
     spec = validate({"scenes": [TITLE], "music": "song.mp3"}, base_dir=tmp_path)
     assert spec["music"]["style"] == str(tmp_path / "song.mp3")
 
