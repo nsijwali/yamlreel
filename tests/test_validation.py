@@ -652,7 +652,8 @@ def test_a_music_path_string_in_a_config_is_relative_to_the_config_folder(tmp_pa
     cfg_file.write_text("music: track.mp3\n")
     cfg = load_config(explicit=cfg_file)
     assert cfg.data["music"]["style"] == str((tmp_path / "sub").resolve() / "track.mp3")
-    assert cfg.data["music"]["bpm"] == 72  # the other settings are still the defaults
+    assert "bpm" not in cfg.data["music"]  # bpm, root and scale come from the style when the spec is validated
+    assert validate({"scenes": [TITLE]}, cfg)["music"]["bpm"] == 72  # koto's, since the style is an audio file
     spec = validate({"scenes": [TITLE], "music": "song.mp3"}, base_dir=tmp_path)
     assert spec["music"]["style"] == str(tmp_path / "song.mp3")
 

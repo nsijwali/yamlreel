@@ -41,8 +41,8 @@ yamlreel-output/
 ```
 
 `share-copy.txt` adds `#Shorts` for vertical clips up to 60 seconds. Videos can be any length, and only a
-vertical video over 3 minutes gets a warning. Music is generated on your machine (plucked strings in a
-Japanese scale), so there is nothing to license or credit.
+vertical video over 3 minutes gets a warning. Music is generated on your machine (five styles, from plucked
+strings in a Japanese scale to lo-fi beats), so there is nothing to license or credit.
 
 ## Quick start
 
@@ -175,6 +175,7 @@ overwrite a file unless you pass `--force`; `--theme` and `--format` set them in
 | [`examples/index-scan.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/index-scan.yaml) | A table that is scanned row by row, a sorted index taking inserts, and a queue. |
 | [`examples/load-balancing-story.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/load-balancing-story.yaml) | The output of `yamlreel story` for [`examples/outlines/load-balancing.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/outlines/load-balancing.yaml): hook, problem, two steps with badges, when to use, and a question end card. |
 | [`examples/subtitles-demo.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/subtitles-demo.yaml) | Narrated scenes with karaoke subtitles, highlighted keywords and numbers, and an SRT file. |
+| [`examples/music-styles.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/music-styles.yaml) | The lo-fi style with per-scene `energy` and narration ducking; swap styles with `--music`. |
 
 It is narrated; add `--no-voice` to render it with music only. For more starting points, run
 `yamlreel init` with the `explainer`, `system-design`, `project` or `code-tip` template.
@@ -187,9 +188,9 @@ It is narrated; add `--no-voice` to render it with music only. For more starting
 | `yamlreel init <template> <file>` | Writes a starter spec: `explainer`, `system-design`, `project` or `code-tip`. |
 | `yamlreel story <outline> [--out FILE] [--theme T] [--format F] [--force]` | Turns an outline into a starter spec; see [Story outlines](#story-outlines). |
 | `yamlreel validate <spec>` | Checks a spec and prints its scene count, length and how many scenes are narrated and subtitled, without rendering. |
-| `yamlreel render <spec>` | Renders. Useful flags: `--preview`, `--out DIR`, `--format vertical\|landscape\|square\|all`, `--music koto\|none\|file.mp3`, `--fps N`, `--contact-frames N`, `--no-voice`, `--voice-url URL`, `--read-screen`, `--allow-path DIR`, `--allow-private-hosts`. |
+| `yamlreel render <spec>` | Renders. Useful flags: `--preview`, `--out DIR`, `--format vertical\|landscape\|square\|all`, `--music koto\|ambient\|lofi\|pulse\|piano\|none\|file.mp3`, `--fps N`, `--contact-frames N`, `--no-voice`, `--voice-url URL`, `--read-screen`, `--allow-path DIR`, `--allow-private-hosts`. |
 | `yamlreel config init [--user]` / `config show` | Writes a starter config, or shows the merged settings and the files they came from. |
-| `yamlreel music --seconds 30 --out track.wav` | Generates the music track on its own (`--bpm`, `--root`, `--scale`, `--seed`). |
+| `yamlreel music --style lofi --seconds 30 --out track.wav` | Generates a music track on its own (`--style`, `--bpm`, `--root`, `--scale`, `--seed`; the style supplies the defaults). |
 
 ## Writing a spec
 
@@ -234,13 +235,13 @@ scenes:
 meta: {title, description, tags: [], links: [], credits: []}
 theme: sumi | washi | midnight | <a theme from your config>
 formats: [vertical, landscape, square]
-music: {style: koto | none | path/to.mp3, bpm: 72, root: D, scale: hirajoshi, seed: 7, snap: false, volume: 0.9}
+music: {style: koto | ambient | lofi | pulse | piano | none | path/to.mp3, bpm, root, scale, seed: 7, snap: false, volume: 0.9}   # bpm/root/scale default per style
 transition: fade              # fade | slide | zoom | cut, or {type: slide, seconds: 0.35}; default fade, 0.25 s
 watermark: "Your Name"        # or {text|image: logo.png, position: top-left|top-right|bottom-left|bottom-right, opacity: 0.75, size: 30}
 poster: {scene: 0, at: 2.6}   # optional; default is the first scene, just before it ends
-voiceover: {voice, language, gap, music_level, read_screen}
+voiceover: {voice, language, gap, music_level, read_screen, duck: false}   # duck: true lowers the music to music_level only while a voice speaks
 subtitles: {style: karaoke | pop | plain, words: 4, position: lower | middle, size: 1.0, uppercase: false, keywords: [], numbers: true, srt: false}   # or `true`; default off
-scenes: [...]                 # every scene also takes: step (badge label), transition, subtitles (false opts out), keywords (extra subtitle keywords), narration_words (JSON of exact word times)
+scenes: [...]                 # every scene also takes: step (badge label), transition, subtitles (false opts out), keywords (extra subtitle keywords), narration_words (JSON of exact word times), energy (low|mid|high: how many music layers play)
 ```
 
 - **Diagrams:** `nodes` take `id, label, kind (client|service|cache|db), x, y, at`, where `x` and `y` are fractions of the frame. `vx, vy` override them in vertical frames, so one diagram fits both shapes. `edges` take `from, to, label, bad, dashed, at, color` and `flash` takes `node, at, text, color`.
@@ -258,6 +259,9 @@ scenes: [...]                 # every scene also takes: step (badge label), tran
 - **Limits:** `limits.max_seconds` and `limits.max_scenes` are capped at 3600 and 1000, whatever a spec or config sets.
 - **Files:** images, pages, music and logos must sit in the spec's folder, a config folder, or a folder you allow with `--allow-path DIR` (or `allow_paths` in your user config).
 - **Music:** `seed` changes the melody and `snap: true` rounds scene lengths to beats. To use your own track, point `style` at an audio file and credit it in `meta.credits`.
+- **Music styles:** `koto` (default, 72 bpm, D hirajoshi), `ambient` (60, C major: pad chords, a bell motif, a soft pulse), `lofi` (78, D dorian: electric piano, swung drums, vinyl crackle), `pulse` (100, A minor: a plucked arpeggio, bass, kick) and `piano` (76, G major: a melody over left-hand fifths). A style fills in any of `bpm`, `root` and `scale` you leave out, and `--music lofi` swaps in the new style's values for just those. Scales: `hirajoshi`, `in`, `yo`, `iwato`, `major`, `minor`, `dorian`, `pentatonic_major`, `pentatonic_minor`, and any scale works with any style. The new styles are rendered in 30 second blocks, so a long track needs about the same memory as a short one.
+- **Energy:** `energy: low | mid | high` on a scene (default `mid`) adds or removes music layers, for example hats and kick at `mid` and snare and bass at `high` in `lofi`. Changes land on the nearest beat and slide over one beat. `koto` ignores it. `yamlreel story` sets it for you.
+- **Ducking:** `voiceover: {duck: true}` lowers the music to `music_level` (default 0.35) only while a clip is speaking: it eases down 0.15 s before the voice and back up over 0.5 s after it, and pauses shorter than 0.6 s stay ducked. Off by default, which keeps the music at `music_level` for the whole video. It also works with a music file, which is decoded first.
 - **Watermark:** appears on every frame and the poster. The default corner is bottom-right for landscape and top-left for vertical, because the Shorts buttons cover the right edge and the bottom.
 
 </details>

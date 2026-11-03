@@ -12,10 +12,12 @@ output_dir: yamlreel-output
 # watermark: {image: logo.png, position: top-left, opacity: 0.75, size: 56}   # text or image
 
 music:
-  style: koto                # koto (generated, no credit needed) | none | path/to/your-track.mp3
-  bpm: 72
-  root: D
-  scale: hirajoshi           # hirajoshi | in | yo | iwato
+  style: koto                # koto | ambient | lofi | pulse | piano (all generated, no credit needed) | none | path/to/your-track.mp3
+  # bpm, root and scale default to the style's own (koto 72 / D / hirajoshi, lofi 78 / D / dorian, ...).
+  # Set them here only to override every style.
+  # bpm: 72
+  # root: D
+  # scale: hirajoshi         # hirajoshi | in | yo | iwato | major | minor | dorian | pentatonic_major | pentatonic_minor
   seed: 7
   volume: 0.9
   snap: false                # true rounds each scene length to whole beats

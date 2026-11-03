@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml
 
 from . import __version__, legacy
+from . import music as music_mod
 from . import story as story_mod
 from . import subtitles as subs_mod
 from . import voice as voice_mod
@@ -18,7 +19,7 @@ from .voice import VoiceError, VoiceServer
 from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, render, share_copy
 from .safety import UnsafeInput
 from .shots import CaptureError
-from .specs import FORMATS, SpecError, check_frame_budget, load_spec
+from .specs import FORMATS, MUSIC_STYLES, SpecError, check_frame_budget, load_spec
 from .theme import FontError, set_font_dirs
 
 
@@ -36,7 +37,7 @@ def _config(args: argparse.Namespace) -> Config:
 
 def _runtime(spec: dict, cfg: Config, music_override: str | None = None, no_voice: bool = False) -> Runtime:
     roots = [Path(spec["_dir"]), *[p.parent for p in cfg.sources], *cfg.allow_paths]
-    if music_override and music_override not in ("koto", "none"):
+    if music_override and music_override not in MUSIC_STYLES:
         roots.append(Path(music_override).expanduser().resolve().parent)  # named on the command line: trusted
     voice = VoiceServer(**cfg.voice_server) if cfg.voice_server and not no_voice else None
     return Runtime(roots=roots, allow_private_hosts=cfg.allow_private_hosts, chromium=cfg.chromium_path, voice=voice)
@@ -162,8 +163,15 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 
 def cmd_music(args: argparse.Namespace) -> int:
-    from . import music
-    wav = music.write_wav(Path(args.out), music.compose(args.seconds, args.bpm, args.root, args.scale, args.seed))
+    music = music_mod
+    defaults = music.STYLE_DEFAULTS[args.style]
+    bpm = args.bpm if args.bpm is not None else defaults["bpm"]
+    root = args.root or defaults["root"]
+    scale = args.scale or defaults["scale"]
+    try:
+        wav = music.write_wav_stream(Path(args.out), music.blocks(args.style, args.seconds, bpm, root, scale, args.seed))
+    except ValueError as e:
+        raise SystemExit(f"error: {e}")
     print(f"wrote {wav}")
     return 0
 
@@ -189,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("spec")
     r.add_argument("--out", help="output folder (default: output_dir from config)")
     r.add_argument("--format", choices=[*FORMATS, "all"], help="override the spec's formats")
-    r.add_argument("--music", help="koto, none, or a path to an audio file (overrides the spec)")
+    r.add_argument("--music", help="a music style (koto, ambient, lofi, pulse, piano), none, or a path to an audio file (overrides the spec)")
     r.add_argument("--fps", type=int, help="frames per second, 1-60 (default: fps from config)")
     r.add_argument("--no-voice", action="store_true",
                    help="skip all narration (music only); no text-to-speech server needed")
@@ -214,11 +222,12 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--user", action="store_true", help="with init: write the user config (~/.config/yamlreel/config.yaml)")
     c.add_argument("--force", action="store_true")
     c.set_defaults(fn=cmd_config)
-    m = sub.add_parser("music", help="generate the koto-style track on its own")
+    m = sub.add_parser("music", help="generate a music track on its own")
+    m.add_argument("--style", choices=sorted(music_mod.STYLE_DEFAULTS), default="koto")
     m.add_argument("--seconds", type=float, default=20)
-    m.add_argument("--bpm", type=float, default=72)
-    m.add_argument("--root", default="D")
-    m.add_argument("--scale", default="hirajoshi")
+    m.add_argument("--bpm", type=float, help="default: the style's own")
+    m.add_argument("--root", help="default: the style's own")
+    m.add_argument("--scale", help="default: the style's own")
     m.add_argument("--seed", type=int, default=7)
     m.add_argument("--out", default="music.wav")
     m.set_defaults(fn=cmd_music)

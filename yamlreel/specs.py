@@ -20,7 +20,7 @@ from .config import yaml_problem as _yaml_problem
 from .datascenes import (ARRAY_ACTIONS, DEFAULT_CTA_PROMPT, MAX_ANSWER_CHARS, MAX_ANSWERS, MAX_CELL_CHARS, MAX_CELLS,
                          MAX_PROMPT_CHARS, MAX_QUESTION_CHARS, MAX_STEPS, MAX_TABLE_COLS, MAX_TABLE_ROWS, POP_SIDES,
                          ArrayScene, ArrayStepError, TableScene, array_states)
-from .music import NOTE_OFFSETS, SCALES
+from .music import ENERGY_LEVELS, NOTE_OFFSETS, SCALES, STYLE_DEFAULTS
 from .subtitles import (DEFAULT_SUBTITLES, MAX_KEYWORD_CHARS, MAX_KEYWORDS, POSITIONS, STYLES)
 from .scenes import SCENE_TYPES, DiagramScene, Scene
 from .textkit import MAX_COUNT_MAGNITUDE, split_count
@@ -42,7 +42,7 @@ REQUIRED = {
     "array": ["items"],
     "cta": ["question"],
 }
-MUSIC_STYLES = {"koto", "none"}
+MUSIC_STYLES = {*STYLE_DEFAULTS, "none"}
 TRANSITIONS = ("fade", "slide", "zoom", "cut")
 TRANSITION_SECONDS = (0.1, 1.0)
 DEFAULT_TRANSITION_SECONDS = 0.25
@@ -437,6 +437,10 @@ def _bool_field(path: str, v: Any, sc: dict[str, Any], env: _Env) -> bool:
     return _bool(path, v)
 
 
+def _energy(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
+    return _choice(path, v, ENERGY_LEVELS)
+
+
 def _transition_from(path: str, v: Any, base: dict[str, Any]) -> dict[str, Any]:
     """`fade`, or {type, seconds}. A field that is not set is taken from `base`. Normalised to both keys."""
     if isinstance(v, str):
@@ -635,6 +639,7 @@ FIELD_CHECKS: dict[str, Checker] = {
     "subtitles": _bool_field,
     "keywords": _keywords,
     "step": _step_label,
+    "energy": _energy,
     "question": _question,
     "answers": _answers,
     "prompt": _prompt,
@@ -784,6 +789,7 @@ def _output_dir(path: str, v: Any, spec: dict[str, Any], env: _Env) -> str:
 
 
 MUSIC_KEYS = ("style", "bpm", "root", "scale", "seed", "volume", "snap")
+STYLE_KEYS = ("bpm", "root", "scale")   # filled from the style when the spec leaves them out
 
 
 def _music(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any]:
@@ -792,6 +798,10 @@ def _music(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any]
     music = dict(_mapping(path, v)) if isinstance(v, dict) else None
     if music is None:
         raise SpecError(f"{path} must be a mapping or a string")
+    # `_filled` is ours: it lists the keys taken from the style's defaults, and survives a second validation
+    filled = music.pop("_filled", [])
+    if not isinstance(filled, list) or any(k not in STYLE_KEYS for k in filled):
+        raise SpecError(f"{path}._filled is set by yamlreel and cannot be written in a spec")
     _no_unknown(path, music, MUSIC_KEYS, "music")
     style = music.get("style")
     if not isinstance(style, str) or (style not in MUSIC_STYLES and not Path(style).suffix):
@@ -805,6 +815,12 @@ def _music(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any]
         music["scale"] = _choice(f"{path}.scale", music["scale"], SCALES)
     if "snap" in music:
         music["snap"] = _bool(f"{path}.snap", music["snap"])
+    defaults = STYLE_DEFAULTS.get(style, STYLE_DEFAULTS["koto"])   # none and audio files: koto's, so snap has a bpm
+    for key in STYLE_KEYS:
+        if key not in music:
+            music[key] = defaults[key]
+            filled.append(key)
+    music["_filled"] = sorted(set(filled), key=STYLE_KEYS.index)
     return music
 
 
@@ -865,12 +881,13 @@ def _watermark(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, 
 def _voiceover(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any]:
     v = v or {}
     vo = dict(_mapping(path, v))
-    _no_unknown(path, vo, ("voice", "language", "gap", "music_level", "read_screen"), "voiceover")
+    _no_unknown(path, vo, ("voice", "language", "gap", "music_level", "read_screen", "duck"), "voiceover")
     for k in ("voice", "language"):
         if k in vo and (not isinstance(vo[k], str) or not vo[k].strip() or len(vo[k]) > 200):
             raise SpecError(f"{path}.{k} must be a short string")
-    if "read_screen" in vo:
-        _bool(f"{path}.read_screen", vo["read_screen"])
+    for k in ("read_screen", "duck"):
+        if k in vo:
+            _bool(f"{path}.{k}", vo[k])
     for k, hi in (("gap", 10), ("music_level", 1)):
         if k in vo:
             vo[k] = _number(f"{path}.{k}", vo[k], 0, hi)

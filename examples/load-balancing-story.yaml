@@ -4,17 +4,21 @@
 meta:
   title: Load balancing
 subtitles: true
+voiceover:
+  duck: true
 scenes:
 - type: type
   text: One busy server should not slow down every user.
   narration: One busy server should not slow down every user.
   transition: cut
   seconds: 4.6
+  energy: high
 - type: title
   eyebrow: THE PROBLEM
   title: Requests pile up on a single machine while the others sit idle.
   narration: Requests pile up on a single machine while the others sit idle.
   seconds: 5.8
+  energy: mid
 - type: array
   title: Round robin
   items:
@@ -24,6 +28,7 @@ scenes:
   step: Round robin
   narration: Hand each new request to the next server in the list, one after another.
   seconds: 8.0
+  energy: mid
 - type: table
   title: Least connections
   columns:
@@ -43,6 +48,7 @@ scenes:
   step: Least connections
   narration: Send each request to the server that has the fewest open connections right now.
   seconds: 8.0
+  energy: mid
 - type: bullets
   title: When to use
   items:
@@ -50,6 +56,7 @@ scenes:
   - 'Uneven or long requests: least connections'
   narration: 'When to use which. Similar requests: round robin. Uneven or long requests: least connections.'
   seconds: 6.6
+  energy: mid
 - type: cta
   question: Which strategy does your service use?
   answers:
@@ -58,3 +65,4 @@ scenes:
   - Something else
   narration: Which strategy does your service use?
   seconds: 6.0
+  energy: low

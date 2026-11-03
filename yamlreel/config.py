@@ -36,7 +36,7 @@ TRUSTED_KEYS = {"allow_paths", "allow_private_hosts", "chromium_path", "font_dir
 DEFAULTS: dict[str, Any] = {
     "theme": "sumi",
     "formats": ["landscape"],
-    "music": {"style": "koto", "bpm": 72, "root": "D", "scale": "hirajoshi", "seed": 7, "volume": 0.9, "snap": False},
+    "music": {"style": "koto", "seed": 7, "volume": 0.9, "snap": False},   # bpm, root and scale come from the style (music.STYLE_DEFAULTS)
     "meta": {"tags": [], "links": [], "credits": []},
     "fps": 30,
     "output_dir": "yamlreel-output",

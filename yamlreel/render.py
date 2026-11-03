@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 from . import music as music_mod
@@ -309,22 +310,56 @@ def contact_sheet(tl: Timeline, path: Path, cols: int | None = None, tile_w: int
     return path
 
 
+def energy_sections(spec: dict[str, Any], starts: list[float], durations: list[float]) -> list[tuple[float, float, int]]:
+    """[(start, end, level)] per scene, from each scene's `energy` (default mid)."""
+    return [(s, s + d, music_mod.ENERGY_LEVELS[sc.get("energy", "mid")])
+            for sc, s, d in zip(spec["scenes"], starts, durations)]
+
+
+def speech_regions(clips: dict[int, np.ndarray], starts: list[float]) -> list[tuple[float, float]]:
+    """Where each narration clip is heard, as placed by `voice_mod.build_track`."""
+    return [(starts[i] + voice_mod.NARRATION_LEAD, starts[i] + voice_mod.NARRATION_LEAD + len(c) / voice_mod.SAMPLE_RATE)
+            for i, c in clips.items()]
+
+
+def _decode_music(ffmpeg: str, src: Path, dst: Path) -> Path:
+    """A music file as mono 44.1 kHz WAV, with the same guard as the final mix: real audio containers only."""
+    cmd = [ffmpeg, "-loglevel", "error", "-y", "-protocol_whitelist", "file", "-format_whitelist", AUDIO_FORMATS,
+           "-i", str(src), "-vn", "-ac", "1", "-ar", str(music_mod.SR), "-c:a", "pcm_s16le", str(dst)]
+    try:
+        done = subprocess.run(cmd, capture_output=True, timeout=600)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RenderError(f"music file: cannot decode {src.name}: {e}") from e
+    if done.returncode != 0:
+        raise RenderError(f"music file: cannot decode {src.name}: {done.stderr.decode(errors='replace')[-300:]}")
+    return dst
+
+
 def _prepare_audio(spec: dict[str, Any], total: float, workdir: Path, override: str | None,
-                   rt: Runtime) -> Path | None:
+                   rt: Runtime, sections: list[tuple[float, float, int]] | None = None,
+                   duck: tuple[list[tuple[float, float]], float] | None = None,
+                   ffmpeg: str | None = None) -> Path | None:
+    """The music as a file. `duck` is (speech regions, music level): the music is lowered under speech here,
+    in numpy, so generated music is made already ducked and a music file is decoded first."""
     m = dict(spec["music"])
     style = override or m["style"]
     if style == "none":
         return None
-    if style == "koto":
-        samples = music_mod.compose(total, bpm=float(m.get("bpm", 72)), root=str(m.get("root", "D")),
-                                    scale=str(m.get("scale", "hirajoshi")), seed=int(m.get("seed", 7)))
-        return music_mod.write_wav(workdir / "music.wav", samples)
+    if style in music_mod.STYLE_DEFAULTS:
+        parts = music_mod.blocks(style, total, bpm=float(m["bpm"]), root=str(m["root"]), scale=str(m["scale"]),
+                                 seed=int(m.get("seed", 7)), sections=sections)
+        if duck:
+            parts = music_mod.apply_duck(parts, *duck)
+        return music_mod.write_wav_stream(workdir / "music.wav", parts)
     try:
         p = resolve_local(style, Path(spec.get("_dir", ".")), rt.roots)
     except UnsafeInput as e:
         raise RenderError(f"music file: {e}") from e
     if not p.is_file():
         raise RenderError(f"music file not found: {p}")
+    if duck and duck[0] and ffmpeg:
+        decoded = _decode_music(ffmpeg, p, workdir / "music-src.wav")
+        return music_mod.write_wav_stream(workdir / "music.wav", music_mod.apply_duck(music_mod.read_wav_blocks(decoded), *duck))
     return p
 
 
@@ -388,6 +423,8 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         raise RenderError("fps must be between 1 and 60")
     rt = runtime or Runtime.for_spec(spec)
     spec = {**spec, "scenes": [dict(sc) for sc in spec["scenes"]]}  # narration stretches scene lengths: work on a copy
+    if music_override in music_mod.STYLE_DEFAULTS or music_override == "none":
+        spec["music"] = music_mod.with_style(spec["music"], music_override)  # before beat snapping reads the bpm
     out = out_dir / fmt
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="yamlreel-") as td:
@@ -427,7 +464,11 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         else:
             (out / "subtitles.srt").unlink(missing_ok=True)   # a file from an earlier run would be taken for this one's
         narration = voice_mod.write_wav(work / "narration.wav", voice_mod.build_track(clips, tl.starts, total)) if clips else None
-        audio = _prepare_audio(spec, total, work, music_override, rt)
+        duck = None
+        if clips and (spec.get("voiceover") or {}).get("duck"):
+            duck = (speech_regions(clips, tl.starts), float(spec["voiceover"].get("music_level", 0.35)))
+        audio = _prepare_audio(spec, total, work, music_override, rt, energy_sections(spec, tl.starts, durations),
+                               duck, ffmpeg)
         poster = tl.frame_at(tl.poster_time())
         poster.convert("RGB").save(out / "poster.jpg", quality=92)
 
@@ -448,7 +489,7 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
                        f"afade=t=in:st=0:d=0.8,afade=t=out:st={fade_out:.3f}:d=2.0")
             if audio and narration:
                 level = float(spec["voiceover"].get("music_level", 0.35))  # music sits under the voice
-                graph = (f"[1:a]{music_f.format(vol=vol * level)}[m];"
+                graph = (f"[1:a]{music_f.format(vol=vol if duck else vol * level)}[m];"
                          f"[2:a]atrim=0:{total:.3f},asetpts=PTS-STARTPTS[n];"
                          "[m][n]amix=inputs=2:duration=longest:normalize=0[a]")
                 cmd += ["-filter_complex", graph, "-map", "0:v", "-map", "[a]"]
