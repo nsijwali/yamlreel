@@ -11,7 +11,6 @@ import yaml
 from PIL import Image, ImageChops
 
 from fakes import _fake_voice_server
-from yamlreel import legacy
 from yamlreel import subtitles as subs
 from yamlreel import voice as voice_mod
 from yamlreel.cli import main
@@ -27,13 +26,12 @@ from yamlreel.voice import NARRATION_LEAD, SAMPLE_RATE
 
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
-    for prefix in ("YAMLREEL", legacy.LEGACY.upper()):
+    for prefix in ("YAMLREEL",):
         for name in ("CONFIG", "FONT_DIR", "CHROMIUM"):
             monkeypatch.delenv(f"{prefix}_{name}", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("YAMLREEL_CONFIG", str(tmp_path / "no-config.yaml"))
     monkeypatch.chdir(tmp_path)
-    legacy._warned.clear()
 
 
 def bursts(*seconds: float, gap: float = 0.3, lead: float = 0.1, tail: float = 0.1) -> np.ndarray:

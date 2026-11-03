@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import yaml
 
-from yamlreel import legacy, specs, shots, voice
+from yamlreel import specs, shots, voice
 from yamlreel import render as render_mod
 from yamlreel import scenes as scenes_mod
 from yamlreel.cli import main
@@ -115,13 +115,12 @@ TITLE = {"type": "title", "title": "x"}
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
     """Never read the developer's own config; run from a scratch folder."""
-    for prefix in ("YAMLREEL", legacy.LEGACY.upper()):
+    for prefix in ("YAMLREEL",):
         for name in ("CONFIG", "FONT_DIR", "CHROMIUM"):
             monkeypatch.delenv(f"{prefix}_{name}", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("YAMLREEL_CONFIG", str(tmp_path / "no-config.yaml"))
     monkeypatch.chdir(tmp_path)
-    legacy._warned.clear()
 
 
 def spec_file(tmp_path: Path, body: str, name: str = "s.yaml") -> Path:

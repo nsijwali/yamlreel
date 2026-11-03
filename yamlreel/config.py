@@ -6,8 +6,7 @@ CLI flags override all of them.
   user config     $YAMLREEL_CONFIG, else $XDG_CONFIG_HOME/yamlreel/config.yaml (~/.config/yamlreel/config.yaml)
   project config  --config PATH, else ./yamlreel.config.yaml
 
-The pre-rename names (old env vars and config locations) still work until 0.3.0; see legacy.py.
-One file is used per slot, never a merge of old and new.
+One file is used per slot, never a merge.
 
 Settings that widen what a spec may touch (`allow_paths`, `allow_private_hosts`, `chromium_path`) are only
 honoured from the user config or the command line. A project config or spec that you downloaded cannot
@@ -23,7 +22,6 @@ from typing import Any
 
 import yaml
 
-from . import legacy
 
 MAX_CONFIG_BYTES = 256 * 1024
 CONFIG_FILENAME = "yamlreel.config.yaml"
@@ -147,21 +145,26 @@ def config_base() -> str:
     return xdg if xdg and os.path.isabs(xdg) else str(Path.home() / ".config")
 
 
+def _env(suffix: str) -> str | None:
+    """$YAMLREEL_<suffix> if set and non-empty, else None."""
+    return os.environ.get(f"YAMLREEL_{suffix}") or None
+
+
 def user_config_path() -> Path:
     """Where the user config is written (config init --user)."""
-    explicit = legacy.env("CONFIG")
+    explicit = _env("CONFIG")
     if explicit:
         return Path(explicit).expanduser()
     return Path(config_base()) / "yamlreel" / "config.yaml"
 
 
 def find_user_config() -> Path:
-    """Where the user config is read from: the same path, or the pre-rename location if only that exists."""
-    explicit = legacy.env("CONFIG")
+    """Where the user config is read from (the same path it is written to)."""
+    explicit = _env("CONFIG")
     if explicit:
         return Path(explicit).expanduser()
     base = Path(config_base())
-    return legacy.pick(base / "yamlreel" / "config.yaml", legacy.legacy_user_config(base))
+    return base / "yamlreel" / "config.yaml"
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -241,8 +244,7 @@ def load_config(explicit: str | Path | None = None, cwd: Path | None = None,
     layers: list[tuple[Path, bool]] = []
     if user.exists():
         layers.append((user, True))
-    project = Path(explicit).expanduser() if explicit else legacy.pick((cwd or Path.cwd()) / CONFIG_FILENAME,
-                                                                  (cwd or Path.cwd()) / legacy.LEGACY_PROJECT_FILENAME)
+    project = Path(explicit).expanduser() if explicit else (cwd or Path.cwd()) / CONFIG_FILENAME
     if explicit and not project.exists():
         raise ConfigError(f"config file not found: {project}")
     if project.exists() and (not user.exists() or project.resolve() != user.resolve()):
@@ -271,8 +273,8 @@ def load_config(explicit: str | Path | None = None, cwd: Path | None = None,
     cfg.allow_private_hosts = cfg.allow_private_hosts or cli_allow_private_hosts
     if cli_voice_url:
         cfg.voice_server = {**(cfg.voice_server or {}), "url": cli_voice_url}
-    cfg.chromium_path = cfg.chromium_path or legacy.env("CHROMIUM")
-    font_dir = legacy.env("FONT_DIR")
+    cfg.chromium_path = cfg.chromium_path or _env("CHROMIUM")
+    font_dir = _env("FONT_DIR")
     if font_dir:
         cfg.font_dirs.append(font_dir)
     try:

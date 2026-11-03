@@ -6,7 +6,7 @@ import pytest
 import yaml
 from fakes import _fake_voice_server, _tone_wav_bytes  # tests/ is on sys.path (pytest rootdir import mode)
 
-from yamlreel import __version__, legacy, music
+from yamlreel import __version__, music
 from yamlreel.cli import main
 from yamlreel.render import RenderError, Runtime, Timeline, render, share_copy
 from yamlreel.config import Config, ConfigError, load_config, merge
@@ -20,12 +20,10 @@ TEMPLATES = Path(__file__).parent.parent / "yamlreel" / "templates"
 
 
 def isolate_env(monkeypatch, xdg):
-    """Drop every old and new override variable, point XDG_CONFIG_HOME at a tmp dir and reset warn-once."""
-    for prefix in ("YAMLREEL", legacy.LEGACY.upper()):
-        for name in ("CONFIG", "FONT_DIR", "CHROMIUM"):
-            monkeypatch.delenv(f"{prefix}_{name}", raising=False)
+    """Drop every override variable and point XDG_CONFIG_HOME at a tmp dir."""
+    for name in ("CONFIG", "FONT_DIR", "CHROMIUM"):
+        monkeypatch.delenv(f"YAMLREEL_{name}", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg / "xdg"))
-    legacy._warned.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -750,3 +748,37 @@ def test_default_names(home, monkeypatch):
     monkeypatch.delenv("YAMLREEL_CONFIG")
     assert main(["config", "init", "--user"]) == 0
     assert (home / "xdg" / "yamlreel" / "config.yaml").exists()
+
+
+def test_pre_rename_env_vars_and_config_paths_are_ignored(tmp_path, monkeypatch, capsys):
+    """The pre-0.2 names were removed in 0.3.0: they are not read, and they do not crash or warn."""
+    isolate_env(monkeypatch, tmp_path)
+    old_user = tmp_path / "xdg" / "vidgen" / "config.yaml"
+    old_user.parent.mkdir(parents=True)
+    old_user.write_text("watermark: Old\nallow_paths: [/data]\n", encoding="utf-8")
+    (tmp_path / "vidgen.config.yaml").write_text("theme: washi\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    for name in ("CONFIG", "FONT_DIR", "CHROMIUM"):
+        monkeypatch.setenv(f"VIDGEN_{name}", str(tmp_path / "old"))
+    cfg = load_config()
+    assert cfg.sources == [] and not cfg.allow_paths and not cfg.font_dirs and cfg.chromium_path is None
+    assert cfg.data["theme"] != "washi" and not cfg.data.get("watermark")
+    assert capsys.readouterr().err == ""
+
+
+def test_new_env_vars_are_still_read(tmp_path, monkeypatch):
+    isolate_env(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("YAMLREEL_FONT_DIR", "/fonts")
+    monkeypatch.setenv("YAMLREEL_CHROMIUM", "/bin/chromium")
+    cfg = load_config()
+    assert cfg.font_dirs == ["/fonts"] and cfg.chromium_path == "/bin/chromium"
+
+
+def test_config_init_user_writes_the_new_path_with_an_old_config_present(tmp_path, monkeypatch):
+    isolate_env(monkeypatch, tmp_path)
+    old = tmp_path / "xdg" / "vidgen" / "config.yaml"
+    old.parent.mkdir(parents=True)
+    old.write_text("theme: washi\n", encoding="utf-8")
+    assert main(["config", "init", "--user"]) == 0
+    assert (tmp_path / "xdg" / "yamlreel" / "config.yaml").exists()

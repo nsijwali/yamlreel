@@ -5,7 +5,7 @@ import pytest
 import yaml
 from PIL import Image, ImageChops
 
-from yamlreel import legacy, render as render_mod
+from yamlreel import render as render_mod
 from yamlreel.cli import main
 from yamlreel.render import RenderError, Timeline, contact_fracs, contact_sheet, ffmpeg_exe
 from yamlreel.scenes import Ctx, Scene, StatScene
@@ -17,13 +17,12 @@ from yamlreel.textkit import EASINGS, ease, ease_in_out, ease_out, split_count
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
     """Never read the developer's own config; run from a scratch folder."""
-    for prefix in ("YAMLREEL", legacy.LEGACY.upper()):
+    for prefix in ("YAMLREEL",):
         for name in ("CONFIG", "FONT_DIR", "CHROMIUM"):
             monkeypatch.delenv(f"{prefix}_{name}", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("YAMLREEL_CONFIG", str(tmp_path / "no-config.yaml"))
     monkeypatch.chdir(tmp_path)
-    legacy._warned.clear()
 
 
 TITLE = {"type": "title", "title": "First", "seconds": 2}
