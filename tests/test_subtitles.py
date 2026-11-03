@@ -117,6 +117,110 @@ def test_a_lone_dash_joins_the_word_before_it():
     assert [w.text for w in subs.estimate_words("wait — what", bursts(1.0))] == ["wait —", "what"]
 
 
+def audio(*parts: float) -> np.ndarray:
+    """Alternating tone and silence lengths in seconds, starting with a tone: audio(1.0, 0.3, 1.0)."""
+    out = []
+    for n, d in enumerate(parts):
+        k = int(round(d * SAMPLE_RATE))
+        if n % 2 == 0:
+            t = np.arange(k) / SAMPLE_RATE
+            out.append((0.5 * np.sin(2 * np.pi * 220 * t)).astype(np.float32))
+        else:
+            out.append(np.zeros(k, dtype=np.float32))
+    return np.concatenate([np.zeros(int(0.1 * SAMPLE_RATE), dtype=np.float32), *out, np.zeros(int(0.1 * SAMPLE_RATE), dtype=np.float32)])
+
+
+SENTENCES = "Red cat sat. Big dog ran. Old man sat. Hot sun set."   # four sentences of three one-syllable words
+
+
+def test_a_sentence_end_whose_pause_is_too_short_to_find_does_not_shift_the_others():
+    # the pause after sentence 1 is 80 ms (below MIN_GAP_SECONDS); the other two are 300 ms
+    est = subs.estimate(SENTENCES, audio(1.0, 0.08, 1.0, 0.3, 1.0, 0.3, 1.0))
+    w = est.words
+    assert est.boundaries == 3 and est.matched == 2
+    second_end, third_end = 0.1 + 2.08, 0.1 + 2.08 + 0.3 + 1.0
+    assert w[5].end == pytest.approx(second_end, abs=0.05) and w[6].start == pytest.approx(second_end + 0.3, abs=0.05)
+    assert w[8].end == pytest.approx(third_end, abs=0.05) and w[9].start == pytest.approx(third_end + 0.3, abs=0.05)
+    assert w[2].end == pytest.approx(0.1 + 1.04, abs=0.1)   # sentence 1 is placed by its share of the speech
+
+
+def test_a_breath_inside_a_sentence_does_not_take_the_sentence_end():
+    # sentence 1 is six words said in two halves with a 600 ms breath; every sentence end has a 300 ms pause
+    text = "Red cat sat big dog ran. Old man sat. Hot sun set. Big cow lay."
+    est = subs.estimate(text, audio(1.0, 0.6, 1.0, 0.3, 1.0, 0.3, 1.0, 0.3, 1.0))
+    w = est.words
+    assert est.boundaries == 3 and est.matched == 3
+    first_end = 0.1 + 1.0 + 0.6 + 1.0
+    assert w[5].end == pytest.approx(first_end, abs=0.05) and w[6].start == pytest.approx(first_end + 0.3, abs=0.05)
+    assert [x.text for x in w] == text.split()
+    assert w[2].end < w[3].start + 1e-9   # the breath is not a cut: the six words share the 2.6 s evenly
+    assert w[3].start == pytest.approx(0.1 + 1.3, abs=0.05)
+
+
+def test_the_text_and_the_audio_stay_in_order():
+    est = subs.estimate("Red cat. Big dog. Old man. Hot sun.", audio(0.7, 0.4, 0.7, 0.2, 0.7, 0.3, 0.7))
+    cuts = [b.start - a.end for a, b in zip(est.words, est.words[1:])]
+    assert all(c >= -1e-9 for c in cuts) and sum(c > 0.15 for c in cuts) == est.matched == 3
+
+
+def test_an_end_far_from_every_pause_is_not_counted_as_matched():
+    text = "One. " + " ".join(["two"] * 11) + "."   # the first end is about 1/7 of the way along; the only pause is 2 s in
+    est = subs.estimate(text, audio(2.0, 0.3, 3.0))
+    assert est.boundaries == 1 and est.matched == 0
+    assert est.words[0].end == pytest.approx(0.1 + 5.3 * 2 / 13, abs=0.05)   # shared out by weight, not put in the pause
+
+
+def test_match_ends_prefers_the_sentence_over_a_clause_for_one_pause():
+    assert subs.match_ends([1.0, 1.1], [1, 2], [1.05], [0.3], 0.6) == [(1, 0)]
+    assert subs.match_ends([1.0, 1.1], [2, 1], [1.05], [0.3], 0.6) == [(0, 0)]
+    assert subs.match_ends([], [], [1.0], [0.3], 0.6) == [] and subs.match_ends([1.0], [2], [], [], 0.6) == []
+
+
+def test_match_ends_is_in_order_and_within_tolerance():
+    rng = np.random.default_rng(3)
+    for _ in range(40):
+        n, m = int(rng.integers(1, 12)), int(rng.integers(1, 12))
+        expected = sorted(rng.uniform(0, 10, n))
+        places = sorted(rng.uniform(0, 10, m))
+        pairs = subs.match_ends(expected, list(rng.integers(1, 3, n)), places, list(rng.uniform(0.1, 0.8, m)), 0.8)
+        assert [j for j, _ in pairs] == sorted({j for j, _ in pairs}) and [i for _, i in pairs] == sorted({i for _, i in pairs})
+        assert all(abs(places[i] - expected[j]) <= 0.8 + 1e-9 for j, i in pairs)
+
+
+def test_fast_speech_with_short_pauses_stays_close_to_the_true_word_times():
+    """Words with known times: tone bursts of uneven length, 40 ms between words, 140 ms between sentences."""
+    text = "Quick brown foxes jump. Lazy dogs sleep all day. Rate limiting stops noisy clients. Tokens refill steadily."
+    words = text.split()
+    wts = [subs._weight(x) for x in words]
+    scale = [1.0, 1.25, 0.8, 1.1, 0.9, 1.2, 0.85] * 4
+    t, truth, parts = 0.1, [], []
+    for k, (x, wt) in enumerate(zip(words, wts)):
+        dur = 0.17 * wt * scale[k]
+        truth.append(t)
+        parts += [dur, 0.14 if x.endswith(".") else 0.04]
+        t += dur + parts[-1]
+    parts.pop()
+    est = subs.estimate(text, audio(*parts))
+    err = [abs(w.start - tr) for w, tr in zip(est.words, truth)]
+    assert est.matched >= 2 and sum(err) / len(err) < 0.12 and max(err) < 0.3
+
+
+def test_the_loudness_pass_gives_the_same_answer_in_any_precision_and_over_many_blocks():
+    long = np.concatenate([audio(1.0, 0.5)] * 60)   # about 100 s: more than one FRAME_BLOCK of frames
+    a = subs._speech_frames(long)
+    assert len(a) > 2 * subs.FRAME_BLOCK
+    assert np.array_equal(a, subs._speech_frames(long.astype(np.float64)))
+    assert np.array_equal(a, subs._speech_frames((long * 32767).astype(np.int16).astype(np.float32) / 32767))
+    assert not subs._speech_frames(np.full(SAMPLE_RATE, np.nan, dtype=np.float32)).any()
+
+
+def test_a_vowel_is_a_vowel():
+    for word in ("×", "÷", "ß", "Ñ", "ñ", "×÷"):
+        assert subs._weight(word) == 1.0 and not subs._VOWELS.search(word)
+    assert subs._VOWELS.search("é") and subs._VOWELS.search("Ö") and subs._VOWELS.search("Å")
+    assert subs._weight("año") == subs._weight("ano") == 2.0
+
+
 # --- narration_words files ------------------------------------------------------------------------------
 
 def words_file(tmp_path, data, name="w.json"):
@@ -181,6 +285,49 @@ def test_word_files_are_confined_to_the_allowed_folders(tmp_path):
     assert got[0].source == "file" and [w.text for w in got[0].words] == ["Hello", "world"]
 
 
+@pytest.mark.parametrize("raw,msg", [
+    ('[{"word": "x", "start": NaN, "end": 1}]', r"\.start must be a number"),
+    ('[{"word": "x", "start": 0, "end": Infinity}]', r"\.end must be a number"),
+    ('[{"word": "x", "start": -Infinity, "end": 1}]', r"\.start must be a number"),
+    ('[{"word": "x", "start": 0, "end": 1e999}]', r"\.end must be a number"),
+    ('[{"word": "x", "start": 0, "end": %s}]' % ("9" * 400), r"\.end must be a number"),   # too large for a float
+    ("[" * 100000 + "]" * 100000, "not readable JSON"),                                    # nested past the recursion limit
+    ('[{"word": "bad\\u0000word", "start": 0, "end": 1}]', "control characters"),
+    ('[{"word": "bell\\u0007", "start": 0, "end": 1}]', "control characters"),
+])
+def test_word_files_with_numbers_or_nesting_that_python_chokes_on_are_rejected_cleanly(tmp_path, raw, msg):
+    with pytest.raises(subs.SubtitleError, match=msg):
+        subs.load_word_file(words_file(tmp_path, raw), 1.0)
+
+
+def test_whitespace_in_a_word_cannot_break_the_srt(tmp_path):
+    got = subs.load_word_file(words_file(tmp_path, [
+        {"word": "two\n\nlines", "start": 0.0, "end": 0.4}, {"word": "  tab\tseparated  ", "start": 0.5, "end": 1.0}]), 1.0)
+    assert [w.text for w in got] == ["two lines", "tab separated"]
+    cue = subs.Cue(0.0, 1.0, (Word("a\n\nb", 0, 0.5), Word("c\r\nd", 0.5, 1.0)), (False, False))
+    block = subs.srt_text([cue, subs.Cue(1.0, 2.0, (Word("e", 1.0, 2.0),), (False,))])
+    assert block.split("\n\n") == ["1\n00:00:00,000 --> 00:00:01,000\na b c d", "2\n00:00:01,000 --> 00:00:02,000\ne\n"]
+
+
+def test_a_word_file_reached_through_a_symlink_cannot_leave_the_allowed_folders(tmp_path):
+    inside, outside = tmp_path / "spec", tmp_path / "elsewhere"
+    inside.mkdir()
+    outside.mkdir()
+    words_file(outside, GOOD)
+    (inside / "link.json").symlink_to(outside / "w.json")
+    spec = validate({"scenes": [{"type": "title", "title": "T", "seconds": 3, "narration": "Hello world",
+                                 "narration_audio": "a.wav", "narration_words": "link.json"}], "subtitles": True}, Config())
+    with pytest.raises(UnsafeInput):
+        subs.scene_words(spec, {0: bursts(1.0)}, lambda p: resolve_local(p, inside, [inside]))
+
+
+def test_a_word_file_that_is_not_utf8_is_rejected(tmp_path):
+    p = tmp_path / "w.json"
+    p.write_bytes(b'[{"word": "\xff\xfe", "start": 0, "end": 1}]')
+    with pytest.raises(subs.SubtitleError, match="not readable JSON"):
+        subs.load_word_file(p, 1.0)
+
+
 def test_a_word_file_error_names_the_scene(tmp_path):
     words_file(tmp_path, [{"word": "x", "start": 0, "end": 9}])
     spec = validate({"scenes": [{"type": "title", "title": "T", "seconds": 3, "narration": "x", "narration_words": "w.json"}],
@@ -235,6 +382,28 @@ def test_estimated_timing_is_reported_once_and_a_poor_match_is_called_out(tmp_pa
     assert not any("only" in w for w in calm)
 
 
+def test_a_word_file_that_cannot_be_used_is_reported(tmp_path):
+    base = {"type": "title", "title": "T", "seconds": 3, "narration": "Hello world", "narration_words": "w.json"}
+    words_file(tmp_path, GOOD)
+    resolve = lambda p: tmp_path / p   # noqa: E731
+    # off for this scene
+    spec = validate({"scenes": [{**base, "subtitles": False, "narration_audio": "a.wav"}], "subtitles": True}, Config())
+    got, warns = subs.scene_words(spec, {0: bursts(1.0)}, resolve)
+    assert got == {} and warns == ["scene 0: narration_words is ignored because subtitles are off for this scene"]
+    spec = validate({"scenes": [{**base, "narration_audio": "a.wav"}]}, Config())   # subtitles off at the top
+    assert "subtitles are off" in subs.scene_words(spec, {0: bursts(1.0)}, resolve)[1][0]
+    # no narration audio at all (for example --no-voice)
+    spec = validate({"scenes": [base], "subtitles": True}, Config())
+    got, warns = subs.scene_words(spec, {}, resolve)
+    assert got == {} and warns == ["scene 0: narration_words is ignored because the scene has no narration audio"]
+    # synthesised narration: the times must match audio that can change between runs
+    got, warns = subs.scene_words(spec, {0: bursts(1.0)}, resolve)
+    assert got[0].source == "file" and len(warns) == 1 and "synthesised narration" in warns[0]
+    # a recording is the normal case: no warning
+    spec = validate({"scenes": [{**base, "narration_audio": "a.wav"}], "subtitles": True}, Config())
+    assert subs.scene_words(spec, {0: bursts(1.0)}, resolve)[1] == []
+
+
 # --- keywords and numbers -------------------------------------------------------------------------------
 
 def test_keywords_match_whole_words_and_phrases_case_insensitively():
@@ -280,6 +449,21 @@ def test_cues_do_not_overlap_start_after_the_lead_and_respect_the_limit():
     for a, b in zip(cues, cues[1:]):
         assert a.start < a.end <= b.start + 1e-9
     assert cues[-1].end <= 3.0 + 1e-9
+
+
+def test_cues_never_overlap_even_when_word_times_do():
+    words = [Word("a", 0.0, 1.0), Word("b", 0.4, 1.2), Word("c", 0.4, 0.9), Word("d", 3.0, 3.2)]   # a file may overlap words
+    cues = subs.build_cues(words, 1, lead=0)
+    assert all(a.end <= b.start + 1e-9 for a, b in zip(cues, cues[1:]))
+    assert all(c.end > c.start for c in cues)
+    assert [c.words[0].text for c in cues] == ["a", "c", "d"]   # b starts with c, so it would never be seen
+    assert (cues[0].start, cues[0].end) == (0.0, 0.4)
+
+
+def test_a_cue_whose_next_one_starts_with_it_is_dropped():
+    cues = subs.build_cues([Word("a", 1.0, 1.4), Word("b", 1.0, 1.5), Word("c", 2.0, 2.2)], 1, lead=0)
+    assert [c.words[0].text for c in cues] == ["b", "c"]
+    assert (cues[0].start, cues[0].end) == (1.0, 2.0) and cues[1].start == 2.0
 
 
 def test_the_active_word_is_the_last_one_that_started():
@@ -399,6 +583,27 @@ def test_subtitles_may_be_set_in_a_config_and_a_spec_can_turn_them_off():
     cfg.data["subtitles"] = {"style": "pop"}
     assert validate({"scenes": [SCENE]}, cfg)["subtitles"]["style"] == "pop"
     assert validate({"subtitles": False, "scenes": [SCENE]}, cfg)["subtitles"] is False
+
+
+def test_subtitles_true_in_a_spec_keeps_the_settings_of_a_config():
+    cfg = Config()
+    cfg.data["subtitles"] = {"style": "pop", "words": 2, "keywords": ["alpha"]}
+    got = validate({"subtitles": True, "scenes": [SCENE]}, cfg)["subtitles"]
+    assert got["style"] == "pop" and got["words"] == 2 and got["keywords"] == ["alpha"]
+    mixed = validate({"subtitles": {"words": 5}, "scenes": [SCENE]}, cfg)["subtitles"]
+    assert mixed["style"] == "pop" and mixed["words"] == 5
+    assert validate({"subtitles": True, "scenes": [SCENE]}, Config())["subtitles"] == subs.DEFAULT_SUBTITLES
+
+
+def test_a_decimal_keyword_must_be_quoted_so_it_is_kept_as_written():
+    ok = validate({"subtitles": {"keywords": ["3.50", 429]}, "scenes": [{**SCENE, "keywords": ["0.10"]}]}, Config())
+    assert ok["subtitles"]["keywords"] == ["3.50", "429"] and ok["scenes"][0]["keywords"] == ["0.10"]
+    for where in ({"subtitles": {"keywords": [3.50]}, "scenes": [SCENE]},
+                  {"scenes": [{**SCENE, "keywords": [2.0]}]}):
+        with pytest.raises(SpecError, match=r"keywords\[0\] must be text; put a decimal number in quotes"):
+            validate(where, Config())
+    loaded = yaml.safe_load("keywords: [3.50, '3.50']")   # what YAML itself makes of it
+    assert loaded["keywords"] == [3.5, "3.50"]
 
 
 # --- the overlay ----------------------------------------------------------------------------------------
@@ -539,8 +744,9 @@ CAPTIONED = {"type": "title", "title": "T", "seconds": 8, "narration": "x", "cap
 def test_a_caption_waits_for_the_end_of_the_speech_when_subtitles_are_on(tmp_path):
     tl, plain = make_timeline(tmp_path, CAPTIONED, sub_cfg={"style": "plain"})
     speech_end = NARRATION_LEAD + 5.0
-    just_before = tl._scene_frame(0, speech_end + subs.CAPTION_GAP - 0.01)
-    after = tl._scene_frame(0, speech_end + subs.CAPTION_GAP + 0.5)
+    cap = tl._cap_from[0]
+    just_before = tl._scene_frame(0, cap - 0.01)
+    after = tl._scene_frame(0, cap + 0.5)
     pill, _ = tl._caps[0]
     cx, cy = int(tl.ctx.W / 2), int(tl.ctx.caption_y)
     bg_px = tl.ctx.background().getpixel((cx, cy))
@@ -549,8 +755,22 @@ def test_a_caption_waits_for_the_end_of_the_speech_when_subtitles_are_on(tmp_pat
     assert tl._scene_frame(0, 1.0).getpixel((cx, top)) == bg_px  # with them it is not
     assert after.getpixel((cx, int(cy - pill.height * 0.45))) != bg_px
     assert just_before.getpixel((cx, int(cy - pill.height * 0.45))) == bg_px
-    assert tl._cap_from[0] == pytest.approx(speech_end + subs.CAPTION_GAP)
+    assert cap >= speech_end + subs.CAPTION_GAP
     assert any("scene 0: the caption appears after the narration ends" in w for w in tl.warnings)
+
+
+def test_the_caption_comes_after_the_last_cue_as_well_as_the_speech(tmp_path):
+    late = [Word("Hello", 0.2, 0.5), Word("there", 5.0, 5.2)]    # the last word ends 0.2 s after the 5 s clip
+    tl, _ = make_timeline(tmp_path, CAPTIONED, sub_cfg={"style": "plain"}, words=late)
+    last_end = tl._subs[0].cues[-1].end
+    assert last_end == pytest.approx(NARRATION_LEAD + 5.2 + subs.HOLD_AFTER_LAST)
+    assert tl._cap_from[0] == pytest.approx(last_end + subs.CAPTION_GAP)   # not speech end + 0.2 s
+    assert tl._cap_from[0] > NARRATION_LEAD + 5.0 + subs.CAPTION_GAP
+    early = [Word("Hi", 0.0, 0.2)]                                          # a cue that is gone long before the speech ends
+    tl2, _ = make_timeline(tmp_path, CAPTIONED, sub_cfg={"style": "plain"}, words=early)
+    assert tl2._cap_from[0] == pytest.approx(NARRATION_LEAD + 5.0 + subs.CAPTION_GAP)
+    sw = SceneWords(tuple(early), 5.0, "file")
+    assert subs.caption_start(sw) == pytest.approx(NARRATION_LEAD + 5.0 + subs.CAPTION_GAP)
 
 
 def test_a_scene_without_subtitles_keeps_its_caption_timing(tmp_path):
@@ -598,6 +818,25 @@ def test_a_render_writes_the_srt_next_to_the_video(tmp_path):
     assert starts == sorted(starts) and starts[0] >= NARRATION_LEAD - 0.01
     assert starts[-1] > 6.0  # the third scene starts at 6 s or later
     assert any("estimated from the audio" in w for w in res["warnings"])
+
+
+@pytestmark_ffmpeg
+def test_a_stale_srt_from_an_earlier_run_is_removed_when_none_is_written(tmp_path):
+    srv, _, url = _fake_voice_server(seconds=1.0)
+    scene = {"type": "title", "title": "One", "seconds": 3, "narration": "Hello world"}
+    out = tmp_path / "o"
+    rt = Runtime(roots=[tmp_path], voice=voice_mod.VoiceServer(url=url))
+    try:
+        first = render(validate({"scenes": [scene], "subtitles": {"srt": True}, "music": {"style": "none"}}, Config()),
+                       "square", out, fps=5, scale=0.1, contact=False, runtime=rt)
+        assert first["srt"].exists()
+        for sub in (True, False):   # srt not asked for / no subtitles at all
+            first["srt"].write_text("old", encoding="utf-8")
+            res = render(validate({"scenes": [scene], "subtitles": sub, "music": {"style": "none"}}, Config()),
+                         "square", out, fps=5, scale=0.1, contact=False, runtime=rt)
+            assert res["srt"] is None and not (out / "square" / "subtitles.srt").exists()
+    finally:
+        srv.shutdown()
 
 
 @pytestmark_ffmpeg

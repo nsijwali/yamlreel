@@ -119,20 +119,26 @@ scenes:
 ```
 
 - **Where the timing comes from.** The text is what the voice says (`narration:`, or the screen text with
-  `read_screen`). Without a word-timing file, yamlreel works the timing out from the audio: it finds the loud parts,
-  puts sentence and clause ends in the silent gaps, and shares the time inside each stretch by how long each word is to
-  say. That is usually within about 150 ms per word, which showing a few words at a time hides. It reports it as a warning,
-  and another warning if the gaps do not match the punctuation.
+  `read_screen`). Without a word-timing file, yamlreel works the timing out from the audio: it finds the loud parts and
+  the silent gaps, pairs each sentence or clause end with the gap nearest where the text puts it (keeping both in
+  order, so one missing pause does not push the others out of place), and shares the time inside each stretch by how
+  long each word is to say. On a fast, tightly paced 40 s recording the average error was about 0.2 s per word; it is
+  an estimate, and a recording with long pauses is closer. Showing a few words at a time hides most of it. It is reported
+  as a warning, and another warning says when fewer than half of the sentence ends could be placed in a pause.
+  `keywords` entries are text: write a decimal as `"3.50"` in quotes.
 - **Exact timing.** Give a scene `narration_words: clip.words.json`, a JSON list of
   `{"word": "Each", "start": 0.12, "end": 0.35}` entries (seconds from the start of the clip; at most 2000 entries and
   256 KB; times must not go backwards and must fit inside the clip). Any aligner can produce it outside yamlreel. The file
-  must be inside the spec folder or an allowed folder, like `narration_audio`. Its words are the ones shown.
+  must be inside the spec folder or an allowed folder, like `narration_audio`. Its words are the ones shown. It only
+  applies to a scene that is narrated and has subtitles on; otherwise a warning says it is ignored.
 - **Your own recordings.** With `narration_audio: take.wav`, put the words spoken in `narration:` as the transcript. A
   recording with no transcript and no `narration_words` gets no subtitles, and a warning says so.
 - **Captions and subtitles.** A scene's `caption` appears after its speech has ended (0.2 s later), so it never covers the
-  subtitles, and a subtitled scene with a caption is made 1.4 s longer so the caption can be read. Scenes without narration,
+  subtitles, and the minimum length of a subtitled scene with a caption is raised by 1.4 s so the caption can be read. The caption also
+  waits for the last subtitle to leave. Scenes without narration,
   or with `subtitles: false`, behave as before.
-- **SRT.** `srt: true` writes the same chunks and times as a `.srt` file, for uploading as captions.
+- **SRT.** `srt: true` writes the same chunks and times as a `.srt` file, for uploading as captions. A file from an earlier
+  run is deleted when a render writes none.
 - `--no-voice` drops the narration, so there is nothing to caption; render with the voice (or `narration_audio`) to see
   subtitles, and use `--preview --contact-frames 6` to check them.
 

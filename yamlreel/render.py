@@ -124,7 +124,7 @@ class Timeline:
                                        limit=self.scenes[i].duration)
             self._subs[i] = subs_mod.SubtitleTrack(self.ctx, cues, cfg)
             if i in self._caps:
-                self._cap_from[i] = subs_mod.caption_start(sw)
+                self._cap_from[i] = subs_mod.caption_start(sw, cues)
         if self._cap_from:
             ids = sorted(self._cap_from)
             self.ctx.warn(f"scene{'s' if len(ids) != 1 else ''} {', '.join(map(str, ids[:8]))}{', ...' if len(ids) > 8 else ''}: "
@@ -405,6 +405,8 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
             cues = tl.subtitle_cues()
             srt = out / "subtitles.srt"
             srt.write_text(subs_mod.srt_text(cues, bool(spec["subtitles"].get("uppercase"))), encoding="utf-8")
+        else:
+            (out / "subtitles.srt").unlink(missing_ok=True)   # a file from an earlier run would be taken for this one's
         narration = voice_mod.write_wav(work / "narration.wav", voice_mod.build_track(clips, tl.starts, total)) if clips else None
         audio = _prepare_audio(spec, total, work, music_override, rt)
         poster = tl.frame_at(tl.poster_time())

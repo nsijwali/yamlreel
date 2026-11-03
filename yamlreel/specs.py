@@ -245,6 +245,8 @@ def _narration_words(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
 def _keywords(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[str]:
     out = []
     for n, k in enumerate(_list(path, v, 0, MAX_KEYWORDS, "MAX_KEYWORDS")):
+        if isinstance(k, float):   # YAML reads 3.50 as 3.5, which would no longer match the word "3.50"
+            raise SpecError(f"{path}[{n}] must be text; put a decimal number in quotes (\"{k:g}\") so it is kept as written")
         word = _text(f"{path}[{n}]", k, MAX_KEYWORD_CHARS, "MAX_KEYWORD_CHARS").strip()
         if not word:
             raise SpecError(f"{path}[{n}] must not be empty")
@@ -912,6 +914,8 @@ def validate(raw: Any, config: Config | None = None, base_dir: Path | None = Non
             scope["transition"] = {"type": scope["transition"]}
         elif "transition" in scope and scope["transition"] is None:  # `transition: null` is the same as not set
             del scope["transition"]
+    if raw.get("subtitles") is True and isinstance(base.get("subtitles"), dict):
+        del raw["subtitles"]  # `subtitles: true` means "on", so a config that already sets them keeps its settings
     spec: dict[str, Any] = merge(base, raw)
     for key, default in DEFAULTS.items():
         spec.setdefault(key, copy.deepcopy(default))

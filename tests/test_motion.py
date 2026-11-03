@@ -463,15 +463,27 @@ def frame_hashes(tmp_path, fmt: str) -> list[str]:
     return [hashlib.sha256(tl.frame_at(t).convert("RGB").tobytes()).hexdigest()[:16] for t in NO_NEW_KEYS_TIMES]
 
 
-def raster_fingerprint() -> tuple[str, str | None, bool]:
+def font_digest() -> str:
+    """sha256 over the font files the scenes draw with (the same bytes give the same glyphs)."""
+    import hashlib
+    from pathlib import Path
+    from yamlreel import theme
+    h = hashlib.sha256()
+    for kind in sorted(k for k in theme._FONT_FILES if k != "cjk"):   # CJK text is not in the hashed frames
+        found = theme._find(theme._FONT_FILES[kind])
+        h.update(kind.encode() + b"\0" + (Path(found).read_bytes() if found else b"missing") + b"\0")
+    return h.hexdigest()[:16]
+
+
+def raster_fingerprint() -> tuple[str, str | None, bool, str]:
     import PIL
     import PIL.features
-    return PIL.__version__, PIL.features.version("freetype2"), bool(PIL.features.check("raqm"))
+    return PIL.__version__, PIL.features.version("freetype2"), bool(PIL.features.check("raqm")), font_digest()
 
 
-# The text rasteriser the hashes above were taken with. On any other Pillow, FreeType or raqm the exact bytes of
-# rendered text can differ, so the byte-exact check is skipped there; the platform-independent checks below still run.
-HASH_FINGERPRINT = ("13.0.0", "2.14.3", False)
+# The text rasteriser and fonts the hashes above were taken with. On any other Pillow, FreeType, raqm or font files the
+# exact bytes of rendered text can differ, so the byte-exact check is skipped there; the platform-independent checks below still run.
+HASH_FINGERPRINT = ("13.0.0", "2.14.3", False, "7e5697d743ad72f1")
 
 
 @pytest.mark.parametrize("fmt", ["landscape", "vertical"])

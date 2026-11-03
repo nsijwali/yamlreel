@@ -184,13 +184,21 @@ scenes:
 1. `narration_words`: JSON `[{"word": str, "start": s, "end": s}, ...]` relative to clip start, at most 2000 entries
    and 256 KB, confined with `resolve_local` like `narration_audio`. Any offline aligner (whisper, or
    MoneyPrinterTurbo output) can produce it outside yamlreel. Times must be monotonic and within clip length + 0.2 s.
-2. Default: a pure-numpy estimate, `subtitles.estimate_words(text, samples)`. (a) RMS over 20 ms frames,
-   threshold max(5% of peak, 90th-percentile floor), trim leading/trailing silence. (b) Find silent gaps of 120 ms
-   or more. (c) Split text on whitespace; each word weighs its vowel-group count (min 1), digit runs 1.5 per digit.
-   (d) Boundaries come from `,;:` (weak) and `.!?` (strong); assign the longest gaps to boundaries in time order,
-   strong first, and fall back to a proportional split when gaps run out. (e) Inside each segment, split time by
-   weight. Deterministic and O(n), with about 150 ms expected error per word, mostly hidden by showing a 3-5 word
-   chunk with the active word highlighted.
+2. Default: a pure-numpy estimate, `subtitles.estimate_words(text, samples)`. (a) RMS over 20 ms frames (float32,
+   in blocks), threshold max(5% of peak, 90th-percentile floor), trim leading/trailing silence. (b) Find silent gaps
+   of 120 ms or more. (c) Split text on whitespace; each word weighs its vowel-group count (min 1, Latin vowels
+   only), digit runs 1.5 per digit. (d) Sentence ends (`.!?`) and clause ends (`,;:`) are matched to gaps in order,
+   not by length. A word's *expected place* is its cumulative weight share of the speech time (the time between
+   the first and last loud frame, minus the gaps). Each gap's place is measured on the same speech-only axis. A
+   small dynamic programme (`subtitles.match_ends`, O(ends x gaps)) pairs ends with gaps keeping both orders and
+   minimising the total cost: an unmatched end costs 1.0 (sentence) or 0.7 (clause); a match costs its distance
+   in tolerances times 1.0 (sentence) or 1.5 (clause), times up to 1.5 for a gap shorter than 0.4 s; a match is
+   allowed only within tolerance = max(0.6 s, 10% of the speech time). So strong ends win a contested gap, a
+   breath inside a sentence is not taken for its end, and a sentence whose pause is too short to detect stays
+   unmatched without moving the others. Only matched pairs count: the "gaps under-match punctuation" warning fires
+   when fewer than half of the ends are matched. (e) Inside each segment between matched gaps (or across the whole
+   speech when none match), split time by weight. Deterministic. Measured on a real 40 s cloned-voice narration
+   against Whisper word starts: see the S3 review-fix commit message for the before and after.
 3. Whisper is not added: it needs torch or ctranslate2 (not pure Python, about 1 GB RAM). See section 4.
 
 **Source of truth.** `voice.narration_text(sc, vo) -> str | None` is extracted from `prepare_narration`, so speech
@@ -300,7 +308,7 @@ in, not as a path.
 | Common scene fields `transition`, `step`, `energy`, `subtitles`, `keywords`, `narration_words` | `Scene.COMMON_FIELDS`, `FIELD_CHECKS` |
 | `stat.count`, `bullets.stagger` | `StatScene.FIELDS`, `BulletsScene.FIELDS` |
 | New types `table`, `array`, `cta`, `tree`, `meter`, `timeline` | `SCENE_TYPES`, `REQUIRED`, `DEFAULT_SECONDS`, nested `*_FIELDS` |
-| New limits (`specs.py`) | `MAX_TABLE_ROWS=12`, `MAX_TABLE_COLS=6`, `MAX_CELLS=12`, `MAX_STEPS=40`, `MAX_TREE_NODES=31`, `MAX_EVENTS=60`, `MAX_WORDS_ENTRIES=2000` |
+| New limits (`specs.py`) | `MAX_TABLE_ROWS=12`, `MAX_TABLE_COLS=6`, `MAX_CELLS=12`, `MAX_STEPS=40`, `MAX_TREE_NODES=31`, `MAX_EVENTS=60`; `MAX_WORDS_ENTRIES=2000` and `MAX_WORDS_BYTES` live in `subtitles.py` |
 | Outputs | `<fmt>/subtitles.srt` (when `subtitles.srt`); `--contact-frames N` (1..8) stills per scene |
 
 ## 4. Alternatives considered
@@ -343,7 +351,7 @@ in, not as a path.
 | Memory: full-res frames (6 MB), `_last` cache, music buffers | Keep only scene i-1's last frame; new styles stream 30 s blocks; static layers cached once per scene. Each PR records peak RSS from `/usr/bin/time -l yamlreel render examples/<x>.yaml --format vertical` (60 s, 30 fps); limit 1.2 GB. Koto's whole-buffer FFT reverb (several GB for an hour-long video) is a pre-existing risk left as is. |
 | Render time | A new scene's `frame(t)` costs at most 1.5x a diagram frame at the same size. Each PR states `--preview` and full-render timings of its example. No timing asserts in CI (flaky). |
 | Test determinism | No pixel goldens. Use geometry accessors (`row_box`, `scan_row`, `array_states`, `tree_layout`) and coarse pixel samples inside known boxes. Music: in-process equality, length, peak, spectral bands; koto checked against a vendored copy of the 0.2.2 function (`tests/_koto_v022.py`). |
-| Subtitle drift (estimate) | Chunking hides most of it. Warn for scenes whose detected gaps under-match boundaries by more than 50%. `subtitles.srt` lets you check timing in any player; `narration_words` gives exact timing. |
+| Subtitle drift (estimate) | Chunking hides most of it. Warn for scenes where fewer than half of the sentence and clause ends could be matched to a pause. `subtitles.srt` lets you check timing in any player; `narration_words` gives exact timing. |
 | Dense tables/arrays in vertical | `ctx.block` shrinks and warns; hard caps on rows/cols/cells; warn when a cell font is under 22u. |
 | Badge, watermark and title collisions | Badge at 0.035H, warning for a wide top-left watermark; the contact sheet is the gate. |
 | Array/meter step logic errors | Replayed at validate time; errors name the step path and time. |
