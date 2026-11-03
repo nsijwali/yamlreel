@@ -7,8 +7,9 @@
 <sub>Created by <a href="https://github.com/nsijwali">Nitin Sijwali</a></sub>
 
 yamlreel turns a YAML file into a finished video: system-design explainers, code tips, project launches and
-feature demos for YouTube, Shorts and LinkedIn, with diagrams, typed code, original music and an optional
-voiceover in your own voice.
+feature demos for YouTube, Shorts and LinkedIn, with animated diagrams, typed code, scanned tables and arrays,
+original music, word-by-word subtitles and an optional voiceover in your own voice. Start from an outline with
+`yamlreel story`, or write the scenes yourself. Release notes: [what changed in each version](https://github.com/nsijwali/yamlreel/releases).
 
 [![ci](https://github.com/nsijwali/yamlreel/actions/workflows/ci.yml/badge.svg)](https://github.com/nsijwali/yamlreel/actions/workflows/ci.yml)
 [![pypi](https://img.shields.io/pypi/v/yamlreel)](https://pypi.org/project/yamlreel/)
@@ -177,7 +178,7 @@ overwrite a file unless you pass `--force`; `--theme` and `--format` set them in
 | [`examples/subtitles-demo.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/subtitles-demo.yaml) | Narrated scenes with karaoke subtitles, highlighted keywords and numbers, and an SRT file. |
 | [`examples/music-styles.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/music-styles.yaml) | The lo-fi style with per-scene `energy` and narration ducking; swap styles with `--music`. |
 
-It is narrated; add `--no-voice` to render it with music only. For more starting points, run
+`cache-stampede-45s` is narrated; add `--no-voice` to render it with music only. For more starting points, run
 `yamlreel init` with the `explainer`, `system-design`, `project` or `code-tip` template.
 
 ## Commands
@@ -324,7 +325,7 @@ folder) instead of `narration:`.
 - **Any compatible server works.** yamlreel speaks MCP "Streamable HTTP" and calls the server's `generate_speech` tool, which must return the audio inline (VoiceStudio's default). VoiceStudio is just one server that does this.
 - **Privacy:** narration text goes to the server you configured. A local server (such as VoiceStudio on `127.0.0.1`) keeps it on your machine; a remote URL sends it to that host. A spec cannot choose the server: the address comes only from your user config or the command line.
 - **Precedence:** a scene's own `narration:` wins over `read_screen`, and `narration: false` keeps a scene silent.
-- **Caching:** audio is cached in `<output folder>/.cache/narration-v2-*.wav`, keyed by the server address (scheme, host, port and path; never the `user:password@` part, query or fragment), the voice (or `client_id` when no voice is set), the language and the text, so re-renders do not speak lines again. The cache is never pruned. Clear it with `rm "<output folder>"/.cache/narration-*.wav`. Upgrading to 0.2.2 re-voices every line once. Changing the engine, model or account behind the **same** server URL, or the recording behind a voice, is not detected: run that `rm` afterwards.
+- **Caching:** audio is cached in `<output folder>/.cache/narration-v2-*.wav`, keyed by the server address (scheme, host, port and path; never the `user:password@` part, query or fragment), the voice (or `client_id` when no voice is set), the language and the text, so re-renders do not speak lines again. The cache is never pruned. Clear it with `rm "<output folder>"/.cache/narration-*.wav`. Versions before 0.2.2 keyed it differently, so upgrading from one re-voices every line once. Changing the engine, model or account behind the **same** server URL, or the recording behind a voice, is not detected: run that `rm` afterwards.
 - **Licences:** VoiceStudio is AGPL-3.0, and its models have their own licences, which its Model Catalogue shows per model. OmniVoice's weights are non-commercial (CC-BY-NC), and that may carry over to the speech they generate. Check before you monetise a video.
 
 </details>
@@ -426,6 +427,11 @@ Specs are treated as untrusted input. File access is confined, URL captures are 
 access come only from you. [SECURITY.md](https://github.com/nsijwali/yamlreel/blob/main/SECURITY.md) covers the details and how to report a vulnerability.
 
 yamlreel is [MIT licensed](https://github.com/nsijwali/yamlreel/blob/main/LICENSE). Tools you pair it with keep their own licences.
+
+## Support
+
+yamlreel is free and MIT licensed. If it saves you time, you can [sponsor the project on GitHub](https://github.com/sponsors/nsijwali) or
+[send a tip via PayPal](https://www.paypal.me/sijwalinitin). Starring the repo and sharing a video you made helps just as much.
 
 ## Author
 
