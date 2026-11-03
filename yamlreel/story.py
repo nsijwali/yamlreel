@@ -56,6 +56,7 @@ PLACEHOLDERS: dict[str, dict[str, Any]] = {
                 "edges": [{"from": "a", "to": "b", "at": 1.2}]},
     "table": {"columns": [f"{TODO} 1", f"{TODO} 2", f"{TODO} 3"], "rows": [[TODO, TODO, TODO] for _ in range(3)]},
     "array": {"items": [TODO, TODO, TODO]},
+    "meter": {"capacity": 10, "start": 10, "steps": [{"at": 1.0, "level": 4}, {"at": 3.0, "level": 10}]},
 }
 
 
