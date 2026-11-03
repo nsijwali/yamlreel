@@ -17,9 +17,11 @@ from . import shots
 from .config import (DEFAULTS, HARD_LIMITS, SHARED_KEYS, Config, _absolutize, clamp_limits, describe_key,
                      describe_value, merge, normalize_music)
 from .config import yaml_problem as _yaml_problem
-from .datascenes import (ARRAY_ACTIONS, DEFAULT_CTA_PROMPT, MAX_ANSWER_CHARS, MAX_ANSWERS, MAX_CELL_CHARS, MAX_CELLS,
-                         MAX_METER_CAPACITY, MAX_PROMPT_CHARS, MAX_QUESTION_CHARS, MAX_SLOTS, MAX_STEPS,
-                         MAX_TABLE_COLS, MAX_TABLE_ROWS, METER_SHAPES, POP_SIDES, ArrayScene, ArrayStepError, MeterScene, TableScene, array_states)
+from .datascenes import (ARRAY_ACTIONS, DEFAULT_CTA_PROMPT, MAX_ANSWER_CHARS, MAX_ANSWERS, MAX_AXIS_TICKS, MAX_CELL_CHARS,
+                         MAX_CELLS, MAX_METER_CAPACITY, MAX_PROMPT_CHARS, MAX_QUESTION_CHARS, MAX_SLOTS, MAX_STEPS,
+                         MAX_TABLE_COLS, MAX_TABLE_ROWS, MAX_TIMELINE_EVENTS, MAX_TIMELINE_WINDOWS, MAX_TREE_CHILDREN,
+                         MAX_TREE_LEVELS, MAX_TREE_NODES, MAX_TREE_PATHS, METER_SHAPES, POP_SIDES, ArrayScene,
+                         ArrayStepError, MeterScene, TableScene, TimelineScene, TreeScene, array_states)
 from .music import ENERGY_LEVELS, NOTE_OFFSETS, SCALES, STYLE_DEFAULTS
 from .subtitles import (DEFAULT_SUBTITLES, MAX_KEYWORD_CHARS, MAX_KEYWORDS, POSITIONS, STYLES)
 from .scenes import SCENE_TYPES, DiagramScene, Scene
@@ -29,7 +31,8 @@ from .theme import get_theme
 FORMATS = {"landscape": (1920, 1080), "vertical": (1080, 1920), "square": (1080, 1080)}
 
 DEFAULT_SECONDS = {"title": 3.0, "type": 3.0, "shot": 4.0, "diagram": 7.0,
-                   "bullets": 5.0, "code": 6.0, "stat": 3.5, "table": 8.0, "array": 8.0, "meter": 10.0, "cta": 6.0}
+                   "bullets": 5.0, "code": 6.0, "stat": 3.5, "table": 8.0, "array": 8.0, "meter": 10.0, "tree": 8.0,
+                   "timeline": 10.0, "cta": 6.0}
 REQUIRED = {
     "title": ["title"],
     "type": ["text"],
@@ -41,6 +44,8 @@ REQUIRED = {
     "table": ["columns", "rows"],
     "array": ["items"],
     "meter": ["capacity"],
+    "tree": ["nodes"],
+    "timeline": ["axis", "events"],
     "cta": ["question"],
 }
 MUSIC_STYLES = {*STYLE_DEFAULTS, "none"}
@@ -62,6 +67,7 @@ MAX_NODES = 40
 MAX_EDGES = 80
 MAX_FLASH = 40
 MAX_CLICKS = 10
+MAX_AXIS_VALUE = 1e9       # largest axis value
 MAX_ID_CHARS = 100       # a node id
 MAX_CUE_SECONDS = 600    # latest `at` of a node, edge or flash
 MAX_META_ENTRIES = 50    # tags, links or credits
@@ -674,6 +680,143 @@ def _meter_steps(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[
     return out
 
 
+def _tree_nodes(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    level: dict[str, int] = {}
+    children: dict[str, int] = {}
+    for n, raw in enumerate(_list(path, v, 1, MAX_TREE_NODES, "MAX_TREE_NODES")):
+        p = f"{path}[{n}]"
+        node = _mapping(p, raw)
+        _no_unknown(p, node, TreeScene.NODE_FIELDS, "a tree node")
+        if "id" not in node or "label" not in node:
+            raise SpecError(f"{p}: every node needs id and label")
+        item: dict[str, Any] = {"id": _node_id(f"{p}.id", node["id"])}
+        if item["id"] in level:
+            raise SpecError(f"{p}.id: duplicate node id {item['id']!r}")
+        item["label"] = _text(f"{p}.label", node["label"], MAX_CELL_CHARS, "MAX_CELL_CHARS")
+        if n == 0:
+            if node.get("parent") is not None:
+                raise SpecError(f"{p}.parent: the first node is the root and has no parent")
+            level[item["id"]] = 1
+        else:
+            if "parent" not in node:
+                raise SpecError(f"{p}: needs parent (only the first node is the root)")
+            parent = _node_id(f"{p}.parent", node["parent"])
+            if parent not in level:
+                raise SpecError(f"{p}.parent: unknown node {parent!r} (a parent must be declared before its children)")
+            if children.get(parent, 0) >= MAX_TREE_CHILDREN:
+                raise SpecError(f"{p}.parent: {parent!r} already has {MAX_TREE_CHILDREN} children; the limit is "
+                                f"{MAX_TREE_CHILDREN} (MAX_TREE_CHILDREN)")
+            if level[parent] >= MAX_TREE_LEVELS:
+                raise SpecError(f"{p}.parent: this would be level {level[parent] + 1}; the limit is "
+                                f"{MAX_TREE_LEVELS} levels, the root being 1 (MAX_TREE_LEVELS)")
+            children[parent] = children.get(parent, 0) + 1
+            level[item["id"]] = level[parent] + 1
+            item["parent"] = parent
+        if "at" in node:
+            item["at"] = _number(f"{p}.at", node["at"], 0, MAX_CUE_SECONDS)
+        out.append(item)
+    return out
+
+
+def _tree_path(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
+    parent_of = {n["id"]: n.get("parent") for n in sc["nodes"]}   # `nodes` is checked first
+    out: list[dict[str, Any]] = []
+    for n, raw in enumerate(_list(path, v, 0, MAX_TREE_PATHS, "MAX_TREE_PATHS")):
+        p = f"{path}[{n}]"
+        st = _mapping(p, raw)
+        _no_unknown(p, st, TreeScene.PATH_FIELDS, "a tree path")
+        for key in ("at", "nodes"):
+            if key not in st:
+                raise SpecError(f"{p}: needs {key}")
+        item: dict[str, Any] = {"at": _number(f"{p}.at", st["at"], 0, MAX_CUE_SECONDS)}
+        if out and item["at"] < out[-1]["at"]:
+            raise SpecError(f"{p}.at must not be earlier than the previous path ({_fmt(out[-1]['at'])})")
+        ids: list[str] = []
+        for j, x in enumerate(_list(f"{p}.nodes", st["nodes"], 1, MAX_TREE_NODES, "MAX_TREE_NODES")):
+            ref = _node_ref(f"{p}.nodes[{j}]", x, set(parent_of))
+            if ids and parent_of[ref] != ids[-1] and parent_of[ids[-1]] != ref:
+                raise SpecError(f"{p}.nodes[{j}]: {ref!r} is not next to {ids[-1]!r} (a path moves between a parent and its child)")
+            ids.append(ref)
+        item["nodes"] = ids
+        if "text" in st:
+            item["text"] = _text(f"{p}.text", st["text"], MAX_CELL_CHARS, "MAX_CELL_CHARS")
+        out.append(item)
+    return out
+
+
+def _axis(path: str, v: Any, sc: dict[str, Any], env: _Env) -> dict[str, Any]:
+    axis = _mapping(path, v)
+    _no_unknown(path, axis, TimelineScene.AXIS_FIELDS, "a timeline axis")
+    for key in ("from", "to"):
+        if key not in axis:
+            raise SpecError(f"{path}: needs {key}")
+    lo = _number(f"{path}.from", axis["from"], -MAX_AXIS_VALUE, MAX_AXIS_VALUE)
+    hi = _number(f"{path}.to", axis["to"], -MAX_AXIS_VALUE, MAX_AXIS_VALUE)
+    if not lo < hi:
+        raise SpecError(f"{path}.from must be less than {path}.to")
+    out: dict[str, Any] = {"from": lo, "to": hi}
+    if "unit" in axis:
+        out["unit"] = _text(f"{path}.unit", axis["unit"], MAX_CELL_CHARS, "MAX_CELL_CHARS")
+    if "ticks" in axis:
+        ticks = _number(f"{path}.ticks", axis["ticks"], 0, MAX_AXIS_VALUE * 2)
+        if ticks <= 0:
+            raise SpecError(f"{path}.ticks must be a number greater than 0 (the spacing between tick labels)")
+        if (hi - lo) / ticks > MAX_AXIS_TICKS:
+            raise SpecError(f"{path}.ticks {_fmt(ticks)} would draw more than {MAX_AXIS_TICKS} ticks (MAX_AXIS_TICKS); "
+                            "use a larger spacing")
+        out["ticks"] = ticks
+    return out
+
+
+def _on_axis(path: str, v: Any, sc: dict[str, Any]) -> float:
+    return _number(path, v, sc["axis"]["from"], sc["axis"]["to"])   # `axis` is checked first
+
+
+def _timeline_events(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for n, raw in enumerate(_list(path, v, 1, MAX_TIMELINE_EVENTS, "MAX_TIMELINE_EVENTS")):
+        p = f"{path}[{n}]"
+        ev = _mapping(p, raw)
+        _no_unknown(p, ev, TimelineScene.EVENT_FIELDS, "a timeline event")
+        if "x" not in ev:
+            raise SpecError(f"{p}: needs x")
+        item: dict[str, Any] = {"x": _on_axis(f"{p}.x", ev["x"], sc)}
+        if "at" in ev:
+            item["at"] = _number(f"{p}.at", ev["at"], 0, MAX_CUE_SECONDS)
+        if "label" in ev:
+            item["label"] = _text(f"{p}.label", ev["label"], MAX_CELL_CHARS, "MAX_CELL_CHARS")
+        if "color" in ev:
+            item["color"] = _choice(f"{p}.color", ev["color"], COLOR_NAMES)
+        out.append(item)
+    return out
+
+
+def _timeline_window(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for n, raw in enumerate(_list(path, v, 0, MAX_TIMELINE_WINDOWS, "MAX_STEPS")):
+        p = f"{path}[{n}]"
+        st = _mapping(p, raw)
+        _no_unknown(p, st, TimelineScene.WINDOW_FIELDS, "a timeline window step")
+        for key in ("at", "range"):
+            if key not in st:
+                raise SpecError(f"{p}: needs {key}")
+        item: dict[str, Any] = {"at": _number(f"{p}.at", st["at"], 0, MAX_CUE_SECONDS)}
+        if out and item["at"] < out[-1]["at"]:
+            raise SpecError(f"{p}.at must not be earlier than the previous step ({_fmt(out[-1]['at'])})")
+        r = st["range"]
+        if not isinstance(r, list) or len(r) != 2:
+            raise SpecError(f"{p}.range must be [low, high] values on the axis")
+        lo, hi = (_on_axis(f"{p}.range[{j}]", x, sc) for j, x in enumerate(r))
+        if not lo < hi:
+            raise SpecError(f"{p}.range must be [low, high] with low < high")
+        item["range"] = [lo, hi]
+        if "text" in st:
+            item["text"] = _text(f"{p}.text", st["text"], MAX_CELL_CHARS, "MAX_CELL_CHARS")
+        out.append(item)
+    return out
+
+
 # One checker per scene field (common and per type). Each returns the normalised value.
 FIELD_CHECKS: dict[str, Checker] = {
     "type": _scene_type,
@@ -730,17 +873,23 @@ FIELD_CHECKS: dict[str, Checker] = {
     "unit": _meter_label,
     "in_label": _meter_label,
     "out_label": _meter_label,
+    "path": _tree_path,
+    "axis": _axis,
+    "events": _timeline_events,
+    "window": _timeline_window,
 }
 # Fields whose meaning depends on the scene type get their own checker; it wins over FIELD_CHECKS.
 TYPE_CHECKS: dict[str, dict[str, Checker]] = {
     "table": {"highlight": _table_highlight},
     "array": {"items": _cells},
     "meter": {"steps": _meter_steps},
+    "tree": {"nodes": _tree_nodes},
+    "timeline": {"count": _bool_field},
 }
 # Fields whose checker reads another field of the same scene, so that one is checked first.
 _CHECKED_FIRST = ("code", "nodes")
 _CHECKED_FIRST_BY_TYPE = {"table": ("columns", "rows"), "array": ("items", "stagger"),
-                           "meter": ("shape", "capacity", "start")}
+                           "meter": ("shape", "capacity", "start"), "timeline": ("axis",)}
 
 
 def _scene(i: int, raw: Any, env: _Env) -> dict[str, Any]:

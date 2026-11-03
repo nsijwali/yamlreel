@@ -211,6 +211,10 @@ BASE_SCENES = {
     "table": {"type": "table", "columns": ["id", "name"], "rows": [["1", "Ada"], ["2", "Lin"]]},
     "array": {"type": "array", "items": ["a", "b"]},
     "meter": {"type": "meter", "capacity": 10, "steps": [{"at": 1, "level": 5}]},
+    "tree": {"type": "tree", "nodes": [{"id": "r", "label": "R"}, {"id": "a", "label": "A", "parent": "r"}],
+             "path": [{"at": 1, "nodes": ["r", "a"]}]},
+    "timeline": {"type": "timeline", "axis": {"from": 0, "to": 10, "ticks": 5}, "events": [{"x": 2}],
+                 "window": [{"at": 1, "range": [0, 5]}]},
     "cta": {"type": "cta", "question": "Which one?", "answers": ["x", "y"]},
 }
 
@@ -277,6 +281,25 @@ def test_type_confusion_every_scene_field(value):
     from yamlreel.datascenes import MeterScene
     for field in sorted(MeterScene.STEP_FIELDS):
         outcome({"scenes": [{**BASE_SCENES["meter"], "steps": [{"at": 1, "level": 5, field: value}]}]})
+    from yamlreel.datascenes import TimelineScene, TreeScene
+    tr, tl = BASE_SCENES["tree"], BASE_SCENES["timeline"]
+    for field in sorted(TreeScene.NODE_FIELDS):
+        outcome({"scenes": [{**tr, "nodes": [{"id": "r", "label": "R"}, {"id": "a", "label": "A", "parent": "r", field: value}]}]})
+        outcome({"scenes": [{**tr, "nodes": [{"id": "r", "label": "R", field: value}]}]})
+    for field in sorted(TreeScene.PATH_FIELDS):
+        outcome({"scenes": [{**tr, "path": [{"at": 1, "nodes": ["r"], field: value}]}]})
+    for field in sorted(TimelineScene.AXIS_FIELDS):
+        outcome({"scenes": [{**tl, "axis": {"from": 0, "to": 10, field: value}}]})
+    for field in sorted(TimelineScene.EVENT_FIELDS):
+        outcome({"scenes": [{**tl, "events": [{"x": 2, field: value}]}]})
+    for field in sorted(TimelineScene.WINDOW_FIELDS):
+        outcome({"scenes": [{**tl, "window": [{"at": 1, "range": [0, 5], field: value}]}]})
+    for bad in (value, [value], [[value]]):
+        outcome({"scenes": [{**tr, "nodes": bad}]})
+        outcome({"scenes": [{**tr, "path": bad}]})
+        outcome({"scenes": [{**tl, "events": bad}]})
+        outcome({"scenes": [{**tl, "window": bad}]})
+        outcome({"scenes": [{**tl, "axis": bad}]})
     for bad in (value, [value], [[value]]):
         outcome({"scenes": [{**t, "rows": bad}]})
         outcome({"scenes": [{**t, "columns": bad}]})

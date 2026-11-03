@@ -946,6 +946,434 @@ class MeterScene(Scene):
         return img
 
 
+# --- tree ------------------------------------------------------------------------------------------------
+
+MAX_TREE_NODES = 31
+MAX_TREE_LEVELS = 5       # the root is level 1
+MAX_TREE_CHILDREN = 6
+MAX_TREE_PATHS = 12
+TREE_FIRST_AT = 0.3       # the first node without `at` appears here
+TREE_STAGGER = 0.12       # seconds between nodes that have no `at`
+HOP_SECONDS = 0.35        # a path lights one edge and the node it leads to per hop
+NODE_FADE = 0.3
+PATH_FADE_OUT = 0.3       # a path dims this fast when the next one starts
+
+
+def tree_layout(nodes: list[dict[str, Any]]) -> dict[str, tuple[float, float]]:
+    """Top-down tidy layout, in fractions (0..1) of the box the tree is drawn in. The first node is the root and
+    every other node names an earlier `parent`. Leaves take consecutive slots left to right and each parent is
+    centred over its first and last child, so a node is never closer than one slot to its neighbour on the same
+    level. y is depth over the deepest level (0 for the root). Pure: validation guarantees at most
+    MAX_TREE_LEVELS levels, so the recursion is shallow."""
+    if not nodes:
+        return {}
+    kids: dict[str, list[str]] = {str(n["id"]): [] for n in nodes}
+    for n in nodes[1:]:
+        kids[str(n["parent"])].append(str(n["id"]))
+    xs: dict[str, float] = {}
+    depth: dict[str, int] = {}
+    slot = 0
+
+    def walk(i: str, d: int) -> None:
+        nonlocal slot
+        depth[i] = d
+        if not kids[i]:
+            xs[i] = float(slot)
+            slot += 1
+            return
+        for k in kids[i]:
+            walk(k, d + 1)
+        xs[i] = (xs[kids[i][0]] + xs[kids[i][-1]]) / 2
+
+    walk(str(nodes[0]["id"]), 0)
+    deepest = max(depth.values())
+    return {i: ((xs[i] + 0.5) / slot, depth[i] / deepest if deepest else 0.0) for i in xs}
+
+
+def tree_levels(nodes: list[dict[str, Any]]) -> dict[str, int]:
+    """Level of each node, the root being 1. Parents come first in the list, so one pass is enough."""
+    level: dict[str, int] = {}
+    for n in nodes:
+        level[str(n["id"])] = 1 if n.get("parent") is None else level[str(n["parent"])] + 1
+    return level
+
+
+class TreeScene(Scene):
+    """A top-down tree with an auto-layout. Nodes appear one by one; a `path` lights edges and nodes in sequence."""
+
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"title", "nodes", "path"})
+    NODE_FIELDS: ClassVar[frozenset[str]] = frozenset({"id", "label", "parent", "at"})
+    PATH_FIELDS: ClassVar[frozenset[str]] = frozenset({"at", "nodes", "text"})
+
+    def __init__(self, spec: dict[str, Any], ctx: Ctx):
+        super().__init__(spec, ctx)
+        u, W, H = ctx.u, ctx.W, ctx.H
+        margin = fill_margin(ctx)
+        nodes = spec["nodes"]
+        self.ids = [str(n["id"]) for n in nodes]
+        index = {i: k for k, i in enumerate(self.ids)}
+        self.parent = [-1] + [index[str(n["parent"])] for n in nodes[1:]]
+        self.appear_at: list[float] = []
+        auto = 0
+        for n in nodes:
+            if n.get("at") is not None:
+                self.appear_at.append(float(n["at"]))
+            else:
+                self.appear_at.append(TREE_FIRST_AT + auto * TREE_STAGGER)
+                auto += 1
+        self.title = (ctx.block(str(spec["title"]), ctx.display, 56 * u * ctx.fs, W - 2 * margin, align="center")
+                      if spec.get("title") else None)
+        top = H * 0.06
+        title_h = self.title.height + 30 * u if self.title else 0.0
+        self.title_xy = (W / 2, top)
+        self.text_y = top + title_h + 36 * u * ctx.fs       # the path text sits between the title and the tree
+        tree_top = self.text_y + 56 * u * ctx.fs
+        tree_bottom = H * (0.70 if ctx.vertical else 0.84)
+        self.box_h = (128 if ctx.vertical else 92) * u
+        levels = tree_levels(nodes)
+        n_levels = max(levels.values())
+        span = max(1.0, tree_bottom - tree_top - self.box_h)
+        step_y = min(span / max(1, n_levels - 1), 360 * u)
+        tree_top += (span - step_y * (n_levels - 1)) / 2   # centred in the space it has
+        self.layout = tree_layout(nodes)
+        x0, x1 = margin, W - margin
+        self.pos = [(x0 + (x1 - x0) * self.layout[i][0], tree_top + self.box_h / 2 + (levels[i] - 1) * step_y)
+                    for i in self.ids]
+        # box width per level: as wide as the longest label wants, but never wider than the tightest gap there
+        base = (46 if ctx.vertical else 40) * u
+        pad = 14 * u
+        self.box_w: list[float] = [0.0] * len(self.ids)
+        self.labels: list[TextBlock] = []
+        for lv in range(1, n_levels + 1):
+            members = sorted((k for k in range(len(self.ids)) if levels[self.ids[k]] == lv), key=lambda k: self.pos[k][0])
+            gap = min((self.pos[b][0] - self.pos[a][0] for a, b in zip(members, members[1:])), default=x1 - x0)
+            want = max(make_block(str(nodes[k]["label"]), "sans_bold", base, 10 * W).width for k in members) + 2 * pad
+            w = min(gap * 0.9, want, 460 * u)
+            for k in members:
+                self.box_w[k] = w
+        sizes: dict[int, float] = {}
+        for k, n in enumerate(nodes):
+            b = make_block(str(n["label"]), "sans_bold", base, self.box_w[k] - 2 * self._pad(k), max_h=self.box_h - pad,
+                           min_size=10, align="center")
+            lv = levels[self.ids[k]]
+            sizes[lv] = min(sizes.get(lv, base), b.size)
+        for k, n in enumerate(nodes):   # one type size per level, so siblings look alike
+            self.labels.append(make_block(str(n["label"]), "sans_bold", sizes[levels[self.ids[k]]],
+                                          self.box_w[k] - 2 * self._pad(k), max_h=self.box_h - pad, min_size=10,
+                                          align="center"))
+        smallest = min(sizes.values())
+        if smallest < 22 * u:
+            ctx.warn(f"tree labels shrunk to {smallest:.0f}px to fit; use fewer nodes or shorter labels")
+        # paths: node light times and the edge each hop draws
+        self.paths: list[dict[str, Any]] = []
+        for p in spec.get("path") or []:
+            seq = [index[str(i)] for i in p["nodes"]]
+            at = float(p["at"])
+            self.paths.append({
+                "at": at, "text": str(p.get("text") or ""), "seq": seq,
+                "hops": [(seq[j - 1], seq[j], at + (j - 1) * HOP_SECONDS) for j in range(1, len(seq))],
+                "lit": [at + j * HOP_SECONDS for j in range(len(seq))],
+                "end": at + max(0, len(seq) - 1) * HOP_SECONDS + 0.2,
+            })
+        self.path_at = [p["at"] for p in self.paths]
+        self.texts = {k: make_block(p["text"], "sans_bold", 40 * u * ctx.fs, W * 0.86, align="center")
+                      for k, p in enumerate(self.paths) if p["text"]}
+        end = max([q["end"] for q in self.paths] + self.appear_at, default=0.0)
+        if end > self.duration:
+            ctx.warn("a tree node or path step ends after the scene does; lengthen the scene or move them earlier")
+
+    # --- geometry (also used by tests) ------------------------------------------------------------------
+
+    def _pad(self, k: int) -> float:
+        """Space between a label and the side of its box: 14 units, less in a box squeezed by a crowded level."""
+        return min(14 * self.ctx.u, self.box_w[k] * 0.1)
+
+    def box(self, k: int) -> tuple[float, float, float, float]:
+        x, y = self.pos[k]
+        w = self.box_w[k]
+        return x - w / 2, y - self.box_h / 2, x + w / 2, y + self.box_h / 2
+
+    def _edge_ends(self, child: int) -> tuple[tuple[float, float], tuple[float, float]]:
+        p = self.parent[child]
+        return (self.pos[p][0], self.pos[p][1] + self.box_h / 2), (self.pos[child][0], self.pos[child][1] - self.box_h / 2)
+
+    def lights(self, t: float) -> tuple[list[float], dict[int, tuple[float, int, float]]]:
+        """(how lit each node is 0..1, {child index: (hop progress 0..1, node the hop starts from, strength)} for
+        the edges being lit). A path dims when the next one starts."""
+        lit_n = [0.0] * len(self.ids)
+        lit_e: dict[int, tuple[float, int, float]] = {}
+        for s, p in enumerate(self.paths):
+            if t < p["at"]:
+                break
+            fade = 1.0
+            if s + 1 < len(self.paths):
+                fade = 1.0 - ease("in_out", (t - self.paths[s + 1]["at"]) / PATH_FADE_OUT)
+            if fade <= 0:
+                continue
+            for k, tl in zip(p["seq"], p["lit"]):
+                lit_n[k] = max(lit_n[k], _appear(t, tl, 0.2) * fade)
+            for a, b, t0 in p["hops"]:
+                prog = max(0.0, min(1.0, (t - t0) / HOP_SECONDS))
+                if prog > 0:
+                    child = b if self.parent[b] == a else a
+                    lit_e[child] = (prog, a, fade)
+        return lit_n, lit_e
+
+    # --- drawing ------------------------------------------------------------------------------------------
+
+    def frame(self, t: float) -> Image.Image:
+        c, th, u = self.ctx, self.ctx.theme, self.ctx.u
+        img = self.static_layer("tree", lambda im: None)
+        d = ImageDraw.Draw(img)
+        if self.title:
+            blit(img, self.title, self.title_xy, th.fg, _appear(t, 0.05), "tc")
+        lit_n, lit_e = self.lights(t)
+        alpha = [max(_appear(t, at, NODE_FADE), lit_n[k]) for k, at in enumerate(self.appear_at)]
+        lw = max(2, int(4 * u))
+        for k in range(1, len(self.ids)):
+            if alpha[k] <= 0.01:
+                continue
+            a, b = self._edge_ends(k)
+            d.line([a, b], fill=lerp_color(th.bg, th.line, alpha[k]), width=lw)
+            if k in lit_e:
+                prog, frm, strength = lit_e[k]
+                s, e = (a, b) if frm == self.parent[k] else (b, a)
+                end = (s[0] + (e[0] - s[0]) * prog, s[1] + (e[1] - s[1]) * prog)
+                d.line([s, end], fill=lerp_color(th.line, th.accent, strength), width=lw + max(2, int(3 * u)))
+        radius = int(16 * u)
+        for k in range(len(self.ids)):
+            a = alpha[k]
+            if a <= 0.01:
+                continue
+            lit = lit_n[k]
+            d.rounded_rectangle(self.box(k), radius,
+                                fill=lerp_color(th.bg, lerp_color(th.card, th.accent, 0.35 * lit), a),
+                                outline=lerp_color(th.bg, lerp_color(th.line, th.accent, lit), a),
+                                width=max(2, int((3 + 2 * lit) * u)))
+            blit(img, self.labels[k], self.pos[k], th.fg, a, "mc")
+        i = bisect.bisect_right(self.path_at, t) - 1
+        if i >= 0 and i in self.texts:
+            blit(img, self.texts[i], (c.W / 2, self.text_y), th.accent, _appear(t, self.paths[i]["at"], 0.25), "mc")
+        return img
+
+
+# --- timeline ---------------------------------------------------------------------------------------------
+
+MAX_TIMELINE_EVENTS = 60
+MAX_TIMELINE_WINDOWS = MAX_STEPS
+MAX_AXIS_TICKS = 24
+TIMELINE_FIRST_AT = 0.3
+TIMELINE_STAGGER = 0.15   # seconds between events that have no `at`
+WINDOW_MOVE = 0.8         # how long the window takes to slide to its next range
+WINDOW_TEXT_FADE = 0.25
+
+
+def event_times(events: list[dict[str, Any]]) -> list[float]:
+    """When each event appears: its `at`, or in declaration order TIMELINE_STAGGER apart."""
+    out: list[float] = []
+    auto = 0
+    for ev in events:
+        if ev.get("at") is not None:
+            out.append(float(ev["at"]))
+        else:
+            out.append(TIMELINE_FIRST_AT + auto * TIMELINE_STAGGER)
+            auto += 1
+    return out
+
+
+@dataclass(frozen=True)
+class WindowSegment:
+    """One window step: the range eases from (start_lo, start_hi) to (lo, hi) between at and at + WINDOW_MOVE."""
+    step: int
+    at: float
+    start_lo: float
+    start_hi: float
+    lo: float
+    hi: float
+    text: str = ""
+
+
+def _window_at(seg: WindowSegment, t: float) -> tuple[float, float]:
+    p = ease("in_out", (t - seg.at) / WINDOW_MOVE)
+    return seg.start_lo + (seg.lo - seg.start_lo) * p, seg.start_hi + (seg.hi - seg.start_hi) * p
+
+
+def window_segments(window: list[dict[str, Any]]) -> list[WindowSegment]:
+    """The window steps in time order. The first step shows the window where it is; each later one slides it from
+    wherever the previous move had got to, so the window never jumps. Pure: no rendering."""
+    out: list[WindowSegment] = []
+    for n, w in enumerate(window):
+        at, (lo, hi) = float(w["at"]), (float(w["range"][0]), float(w["range"][1]))
+        if out and at < out[-1].at:
+            raise ValueError(f"window[{n}].at: {at:g}s is earlier than the previous step ({out[-1].at:g}s)")
+        s_lo, s_hi = _window_at(out[-1], at) if out else (lo, hi)
+        out.append(WindowSegment(n, at, s_lo, s_hi, lo, hi, str(w.get("text") or "")))
+    return out
+
+
+def window_range(window: list[dict[str, Any]], t: float,
+                 segments: list[WindowSegment] | None = None) -> tuple[float, float] | None:
+    """The window's (lo, hi) at scene time t, or None before the first window step."""
+    segs = window_segments(window) if segments is None else segments
+    i = bisect.bisect_right([s.at for s in segs], t) - 1
+    return None if i < 0 else _window_at(segs[i], t)
+
+
+def count_in_window(events: list[dict[str, Any]], t: float, rng: tuple[float, float] | None) -> int:
+    """How many events have appeared by t (at <= t) and sit inside the range (lo <= x <= hi). 0 without a window."""
+    if rng is None:
+        return 0
+    lo, hi = rng
+    return sum(1 for ev, at in zip(events, event_times(events)) if at <= t and lo <= float(ev["x"]) <= hi)
+
+
+def timeline_count(spec: dict[str, Any], t: float) -> int:
+    """The "N in window" number at scene time t for a validated timeline spec."""
+    return count_in_window(spec["events"], t, window_range(spec.get("window") or [], t))
+
+
+class TimelineScene(Scene):
+    """Events on an axis and a window that slides over them, with a live count of the events inside it."""
+
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"title", "axis", "events", "window", "count"})
+    AXIS_FIELDS: ClassVar[frozenset[str]] = frozenset({"from", "to", "unit", "ticks"})
+    EVENT_FIELDS: ClassVar[frozenset[str]] = frozenset({"x", "at", "label", "color"})
+    WINDOW_FIELDS: ClassVar[frozenset[str]] = frozenset({"at", "range", "text"})
+
+    def __init__(self, spec: dict[str, Any], ctx: Ctx):
+        super().__init__(spec, ctx)
+        u, W, H = ctx.u, ctx.W, ctx.H
+        margin = fill_margin(ctx)
+        axis = spec["axis"]
+        self.lo_x, self.hi_x = float(axis["from"]), float(axis["to"])
+        self.unit = str(axis.get("unit") or "")
+        self.ticks = float(axis.get("ticks") or (self.hi_x - self.lo_x) / 4)
+        self.events = spec["events"]
+        self.times = event_times(self.events)
+        self.window = spec.get("window") or []
+        self.segments = window_segments(self.window)
+        self.seg_at = [s.at for s in self.segments]
+        self.show_count = bool(spec.get("count"))
+        self.title = (ctx.block(str(spec["title"]), ctx.display, 56 * u * ctx.fs, W - 2 * margin, align="center")
+                      if spec.get("title") else None)
+        # vertical stack: title, count, window text, then the event lanes above the axis
+        top = H * 0.06
+        title_h = self.title.height + 30 * u if self.title else 0.0
+        self.title_xy = (W / 2, top)
+        self.count_y = top + title_h + 60 * u * ctx.fs
+        self.count_size = 96 * u * ctx.fs
+        self.text_y = self.count_y + 80 * u * ctx.fs
+        self.chart_top = self.text_y + 50 * u * ctx.fs
+        chart_bottom = H * (0.70 if ctx.vertical else 0.84)
+        self.band_h = (400 if ctx.vertical else 300) * u   # the window band and the lanes under it
+        self.axis_y = (self.chart_top + chart_bottom) / 2 + self.band_h / 2 - 20 * u
+        self.band_top = self.axis_y - self.band_h
+        self.x0, self.x1 = margin + 20 * u, W - margin - 20 * u
+        self.dot_r = max(5.0, (17 if ctx.vertical else 12) * u)
+        self.label_size = 26 * u * ctx.fs
+        self.labels = [make_block(str(ev["label"]), "sans_bold", self.label_size, 260 * u, align="center")
+                       if ev.get("label") else None for ev in self.events]
+        self.dots = self._lanes()
+        end = max([s.at + WINDOW_MOVE for s in self.segments] + self.times, default=0.0)
+        if end > self.duration:
+            ctx.warn("a timeline event or window step ends after the scene does; lengthen the scene or move them earlier")
+        self.texts = {s.step: make_block(s.text, "sans_bold", 40 * u * ctx.fs, W * 0.86, align="center")
+                      for s in self.segments if s.text}
+        self.counts = _BlockCache()
+
+    def px(self, value: float) -> float:
+        return self.x0 + (value - self.lo_x) / (self.hi_x - self.lo_x) * (self.x1 - self.x0)
+
+    def _lanes(self) -> list[tuple[float, float]]:
+        """(x, y) of every event dot. Events that would overlap (dot or label) stack into lanes above the axis."""
+        r, u = self.dot_r, self.ctx.u
+        has_label = any(self.labels)
+        pitch = 2 * r + 10 * u + (self.label_size * 1.3 if has_label else 0)
+        room = self.axis_y - 22 * u - self.band_top
+        max_lanes = max(1, int(room // pitch))
+        lane_end: list[float] = []   # right edge of the last item in each lane
+        out: list[tuple[float, float]] = [(0.0, 0.0)] * len(self.events)
+        for k in sorted(range(len(self.events)), key=lambda k: float(self.events[k]["x"])):
+            x = self.px(float(self.events[k]["x"]))
+            half = max(r, (self.labels[k].width / 2) if self.labels[k] else 0.0) + 4 * u
+            lane = next((i for i, e in enumerate(lane_end) if x - half >= e), len(lane_end))
+            if lane >= max_lanes:
+                lane = max_lanes - 1
+                self.ctx.warn("timeline events overlap; use fewer events or spread them along the axis")
+            if lane == len(lane_end):
+                lane_end.append(x + half)
+            else:
+                lane_end[lane] = max(lane_end[lane], x + half)
+            out[k] = (x, self.axis_y - 22 * u - r - lane * pitch)
+        return out
+
+    def window_px(self, t: float) -> tuple[float, float] | None:
+        rng = window_range(self.window, t, self.segments)
+        return None if rng is None else (self.px(rng[0]), self.px(rng[1]))
+
+    # --- drawing ------------------------------------------------------------------------------------------
+
+    def _draw_static(self, img: Image.Image) -> None:
+        c, th, u = self.ctx, self.ctx.theme, self.ctx.u
+        d = ImageDraw.Draw(img)
+        d.line([(self.x0, self.axis_y), (self.x1, self.axis_y)], fill=th.line, width=max(3, int(5 * u)))
+        n = int(round((self.hi_x - self.lo_x) / self.ticks))
+        decimals = max(decimals_of(self.lo_x), decimals_of(self.ticks))
+        for i in range(n + 1):
+            v = min(self.hi_x, self.lo_x + i * self.ticks)
+            x = self.px(v)
+            d.line([(x, self.axis_y), (x, self.axis_y + 14 * u)], fill=th.line, width=max(2, int(3 * u)))
+            text = _number_text(v, decimals) + (f" {self.unit}" if self.unit and i == n else "")
+            blit(img, make_block(text, "sans_bold", 28 * u * c.fs, 220 * u, align="center"),
+                 (x, self.axis_y + 24 * u), th.muted, 1.0, "tc")
+
+    def frame(self, t: float) -> Image.Image:
+        c, th, u = self.ctx, self.ctx.theme, self.ctx.u
+        img = self.static_layer("timeline", self._draw_static)
+        if self.title:
+            blit(img, self.title, self.title_xy, th.fg, _appear(t, 0.05), "tc")
+        wpx = self.window_px(t)
+        w_alpha = _appear(t, self.seg_at[0], 0.4) if self.segments else 0.0
+        if wpx and w_alpha > 0.01:
+            box = (int(wpx[0]), int(self.band_top), int(math.ceil(wpx[1])), int(self.axis_y + 12 * u))
+            if box[2] > box[0]:
+                region = img.crop(box)
+                img.paste(Image.blend(region, Image.new("RGB", region.size, th.accent), 0.16 * w_alpha), box[:2])
+                d = ImageDraw.Draw(img)
+                edge = lerp_color(th.bg, th.accent, w_alpha)
+                for x in (wpx[0], wpx[1]):
+                    d.line([(x, self.band_top), (x, self.axis_y + 12 * u)], fill=edge, width=max(2, int(4 * u)))
+                d.line([(wpx[0], self.axis_y), (wpx[1], self.axis_y)], fill=edge,
+                       width=max(5, int(10 * u)))
+        d = ImageDraw.Draw(img)
+        rng = window_range(self.window, t, self.segments)
+        r = self.dot_r
+        for k, ev in enumerate(self.events):
+            a = _appear(t, self.times[k], 0.3)
+            if a <= 0.01:
+                continue
+            x, y = self.dots[k]
+            base = getattr(th, str(ev.get("color") or "accent2"))
+            inside = rng is not None and rng[0] <= float(ev["x"]) <= rng[1]
+            if rng is not None and not inside:
+                base = lerp_color(base, th.bg, 0.6)
+            rr = r * (0.6 + 0.4 * a)
+            d.ellipse([x - rr, y - rr, x + rr, y + rr], fill=lerp_color(th.bg, base, a),
+                      outline=lerp_color(th.bg, th.fg, a) if inside else None, width=max(2, int(3 * u)))
+            if self.labels[k]:
+                blit(img, self.labels[k], (x, y - r - 6 * u), base if not inside else th.fg, a, "bc")
+        if self.show_count and self.segments:
+            n = count_in_window(self.events, t, rng)
+            blk = self.counts.get(f"{n} in window", lambda s: make_block(s, "sans_bold", self.count_size, c.W * 0.9,
+                                                                         min_size=10, align="center"))
+            blit(img, blk, (c.W / 2, self.count_y), th.accent, w_alpha, "mc")
+        i = bisect.bisect_right(self.seg_at, t) - 1
+        if i >= 0 and i in self.texts:
+            blit(img, self.texts[i], (c.W / 2, self.text_y), th.accent2, _appear(t, self.segments[i].at, WINDOW_TEXT_FADE),
+                 "mc")
+        return img
+
+
 # --- cta end card ---------------------------------------------------------------------------------------
 
 class CtaScene(Scene):
