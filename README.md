@@ -99,6 +99,7 @@ yamlreel render cache-stampede-45s.yaml --no-voice
 | Spec | What it is |
 | --- | --- |
 | [`examples/cache-stampede-45s.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/cache-stampede-45s.yaml) | A 45-second system-design explainer with a diagram, code and a narrated script. |
+| [`examples/motion-demo.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/motion-demo.yaml) | Scene transitions, staggered bullets and counting-up numbers. |
 
 It is narrated; add `--no-voice` to render it with music only. For more starting points, run
 `yamlreel init` with the `system-design`, `project` or `code-tip` template.
@@ -110,7 +111,7 @@ It is narrated; add `--no-voice` to render it with music only. For more starting
 | `yamlreel --version` | Prints the installed version and exits. |
 | `yamlreel init <template> <file>` | Writes a starter spec: `system-design`, `project` or `code-tip`. |
 | `yamlreel validate <spec>` | Checks a spec and prints its scene count and length, without rendering. |
-| `yamlreel render <spec>` | Renders. Useful flags: `--preview`, `--out DIR`, `--format vertical\|landscape\|square\|all`, `--music koto\|none\|file.mp3`, `--fps N`, `--no-voice`, `--voice-url URL`, `--read-screen`, `--allow-path DIR`, `--allow-private-hosts`. |
+| `yamlreel render <spec>` | Renders. Useful flags: `--preview`, `--out DIR`, `--format vertical\|landscape\|square\|all`, `--music koto\|none\|file.mp3`, `--fps N`, `--contact-frames N`, `--no-voice`, `--voice-url URL`, `--read-screen`, `--allow-path DIR`, `--allow-private-hosts`. |
 | `yamlreel config init [--user]` / `config show` | Writes a starter config, or shows the merged settings and the files they came from. |
 | `yamlreel music --seconds 30 --out track.wav` | Generates the music track on its own (`--bpm`, `--root`, `--scale`, `--seed`). |
 
@@ -139,9 +140,9 @@ scenes:
 | --- | --- | --- |
 | `title` | eyebrow, title, subtitle and URL, easing in line by line | `title`, `eyebrow`, `subtitle`, `url` |
 | `type` | one line typed out with a cursor: your hook | `text` |
-| `bullets` | points that appear one at a time | `title`, `items` |
+| `bullets` | points that appear one at a time | `title`, `items`, `stagger` |
 | `code` | code typed on screen, with highlighted lines | `code`, `highlight`, `title` |
-| `stat` | one big number or phrase | `value`, `label`, `eyebrow` |
+| `stat` | one big number or phrase, optionally counting up | `value`, `label`, `eyebrow`, `count` |
 | `diagram` | boxes and arrows that appear in order, packets flowing, nodes flashing | `nodes`, `edges`, `flash`, `title` |
 | `shot` | a screenshot of a URL or an image, with a slow camera move | `source`, `zoom`, `focus`, `fit`, `click`, `scroll_y` |
 
@@ -155,6 +156,7 @@ meta: {title, description, tags: [], links: [], credits: []}
 theme: sumi | washi | midnight | <a theme from your config>
 formats: [vertical, landscape, square]
 music: {style: koto | none | path/to.mp3, bpm: 72, root: D, scale: hirajoshi, seed: 7, snap: false, volume: 0.9}
+transition: fade              # fade | slide | zoom | cut, or {type: slide, seconds: 0.35}; default fade, 0.25 s
 watermark: "Your Name"        # or {text|image: logo.png, position: top-left|top-right|bottom-left|bottom-right, opacity: 0.75, size: 30}
 poster: {scene: 0, at: 2.6}   # optional; default is the first scene, just before it ends
 voiceover: {voice, language, gap, music_level, read_screen}
@@ -163,6 +165,10 @@ scenes: [...]
 
 - **Diagrams:** `nodes` take `id, label, kind (client|service|cache|db), x, y, at`, where `x` and `y` are fractions of the frame. `vx, vy` override them in vertical frames, so one diagram fits both shapes. `edges` take `from, to, label, bad, dashed, at, color` and `flash` takes `node, at, text, color`.
 - **Shots:** `source` (URL or image), `fit: cover | card`, `zoom: [from, to]`, `focus: [x, y]`, `focus_to`, `click: [selectors]`, `scroll_y`, `wait_ms`, `viewport`, `scale`. Screenshots are cached in `<output folder>/.cache`; delete it to capture again.
+- **Transitions:** `transition` at the top sets how every scene enters; a scene's own `transition` overrides it. `fade` cross-fades, `slide` pushes the old scene out to the left, `zoom` settles the new scene in from slightly larger, `cut` switches at once. `seconds` is 0.1 to 1.0 (default 0.25); a scene's length never changes.
+- **Stagger:** `stagger: 0.7` on a `bullets` scene sets the seconds between bullets (0.1 to 3). Without it the spacing is worked out from the scene length.
+- **Count-up:** `count: true` on a `stat` scene counts the one number in `value` up from 0 over 60% of the scene; `count: {from: 0, seconds: 2.5}` sets both. Prefix, suffix, thousands separators and decimals are kept, and the scene ends on exactly the `value` text. `value` must hold exactly one number.
+- **Contact sheet:** `render --contact-frames N` (1 to 12) writes `contact.png` with N stills per scene, one row per scene, to check that reveals progress and nothing overlaps. Default: two per scene.
 - **Unknown keys are errors:** a misspelled or extra key stops the render, for example `error: scenes[0].titel: unknown field for a title scene; allowed: caption, eyebrow, narration, ...`, instead of being silently ignored.
 - **Limits:** `limits.max_seconds` and `limits.max_scenes` are capped at 3600 and 1000, whatever a spec or config sets.
 - **Files:** images, pages, music and logos must sit in the spec's folder, a config folder, or a folder you allow with `--allow-path DIR` (or `allow_paths` in your user config).

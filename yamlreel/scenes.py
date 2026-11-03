@@ -3,115 +3,20 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
 from PIL import Image, ImageDraw, ImageFilter
 
+from .scenebase import Ctx, Scene, _appear
 from .shots import load_shot
-from .textkit import TextBlock, blit, ease_in_out, ease_out, lerp_color, make_block
+from .textkit import TextBlock, blit, ease_in_out, ease_out, lerp_color, make_block, split_count
 from .theme import Color, Theme, font
 
 SS = 2  # diagram supersampling
 
 # Options of a `shot` scene that are passed to the screenshot capture (and so are part of its cache key).
 CAPTURE_OPTS = ("viewport", "scale", "click", "scroll_y", "wait_ms", "full_page")
-
-
-@dataclass
-class Ctx:
-    W: int
-    H: int
-    theme: Theme
-    workdir: Path
-    base_dir: Path
-    roots: list[Path] = field(default_factory=list)
-    allow_private_hosts: bool = False
-    chromium: str | None = None
-    warnings: list[str] = field(default_factory=list)
-    _bg: Image.Image | None = None
-
-    @property
-    def vertical(self) -> bool:
-        return self.H > self.W
-
-    @property
-    def u(self) -> float:
-        return min(self.W, self.H) / 1080
-
-    @property
-    def fs(self) -> float:
-        """Text scale: vertical frames are read on phones, so type is larger."""
-        return 1.2 if self.vertical else 1.0
-
-    @property
-    def margin(self) -> int:
-        return int(self.W * 0.08)
-
-    @property
-    def cy(self) -> float:
-        """Vertical centre of the content area (clear of the caption zone)."""
-        return self.H * (0.42 if self.vertical else 0.45)
-
-    @property
-    def caption_y(self) -> float:
-        return self.H * (0.76 if self.vertical else 0.88)
-
-    def warn(self, msg: str) -> None:
-        if msg not in self.warnings:
-            self.warnings.append(msg)
-
-    def background(self) -> Image.Image:
-        if self._bg is None:
-            t, W, H = self.theme, self.W, self.H
-            # soft radial vignette: lighter centre, darker edges
-            import numpy as np
-            yy, xx = np.mgrid[0:H, 0:W]
-            r = np.sqrt(((xx - W / 2) / (W / 2)) ** 2 + ((yy - H * 0.45) / (H / 2)) ** 2)
-            k = np.clip(1.0 - 0.10 * r, 0.82, 1.0)[..., None]
-            base = np.array(t.bg, dtype=np.float32)[None, None, :] * k
-            img = Image.fromarray(np.clip(base, 0, 255).astype("uint8"), "RGB")
-            if t.frame:
-                d = ImageDraw.Draw(img)
-                inset = int(36 * self.u)
-                d.rectangle([inset, inset, W - inset, H - inset], outline=t.line, width=max(1, int(2 * self.u)))
-            self._bg = img
-        return self._bg.copy()
-
-    def block(self, text: str, kind: str, size: float, max_w: float, **kw: Any) -> TextBlock:
-        b = make_block(text, kind, size, max_w, **kw)
-        if b.shrunk:
-            self.warn(f"text shrunk to fit ({b.size}px): {text[:40]!r}")
-        return b
-
-    @property
-    def display(self) -> str:
-        return "serif_bold" if self.theme.display == "serif" else "sans_bold"
-
-    @property
-    def body(self) -> str:
-        return self.theme.display
-
-
-def _appear(t: float, start: float, dur: float = 0.5) -> float:
-    return ease_out((t - start) / dur)
-
-
-class Scene:
-    # The spec keys a scene reads. specs.py rejects anything else, and a test keeps these tables in step
-    # with what the constructors actually read.
-    COMMON_FIELDS: ClassVar[frozenset[str]] = frozenset({"type", "seconds", "caption", "narration", "narration_audio"})
-    FIELDS: ClassVar[frozenset[str]] = frozenset()
-
-    def __init__(self, spec: dict[str, Any], ctx: Ctx):
-        self.spec = spec
-        self.ctx = ctx
-        self.duration = float(spec["seconds"])
-        self.caption = spec.get("caption")
-
-    def frame(self, t: float) -> Image.Image:  # pragma: no cover
-        raise NotImplementedError
 
 
 class TitleScene(Scene):
@@ -258,7 +163,7 @@ class ShotScene(Scene):
 
 
 class BulletsScene(Scene):
-    FIELDS: ClassVar[frozenset[str]] = frozenset({"items", "title"})
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"items", "title", "stagger"})
 
     def __init__(self, spec: dict[str, Any], ctx: Ctx):
         super().__init__(spec, ctx)
@@ -278,11 +183,14 @@ class BulletsScene(Scene):
         self.blocks, self.gap = blocks, gap
         self.total = total
         self.th = th
+        stagger = spec.get("stagger")
+        self.stagger = float(stagger) if stagger is not None else None  # replaces the computed step when set
 
     def frame(self, t: float) -> Image.Image:
         c = self.ctx
         img = c.background()
-        step = min(1.1, max(0.4, (self.duration - 1.2) / max(1, len(self.items))))
+        step = (self.stagger if self.stagger is not None
+                else min(1.1, max(0.4, (self.duration - 1.2) / max(1, len(self.items)))))
         y = c.cy - self.total / 2 + (20 * c.u if self.head else 0)
         if self.head:
             a = _appear(t, 0.1)
@@ -302,7 +210,9 @@ class BulletsScene(Scene):
 
 
 class StatScene(Scene):
-    FIELDS: ClassVar[frozenset[str]] = frozenset({"value", "label", "eyebrow"})
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"value", "label", "eyebrow", "count"})
+    COUNT_CACHE = 64  # rendered value blocks kept while counting
+    COUNT_SHARE = 0.6  # `count: true` counts for this share of the scene
 
     def __init__(self, spec: dict[str, Any], ctx: Ctx):
         super().__init__(spec, ctx)
@@ -310,17 +220,53 @@ class StatScene(Scene):
         self.eyebrow = ctx.block(str(spec["eyebrow"]).upper(), "sans_bold", 28 * u, maxw, tracking=7 * u) if spec.get("eyebrow") else None
         self.value = ctx.block(str(spec["value"]), ctx.display, 170 * u * ctx.fs, maxw, max_h=260 * u, align="center", spacing=1.1)
         self.label = ctx.block(str(spec["label"]), ctx.body, 44 * u, maxw, max_h=200 * u, align="center") if spec.get("label") else None
+        self.count = None
+        count = spec.get("count")
+        if count:
+            self.count = split_count(str(spec["value"]))
+            self.count_from = float(count.get("from", 0)) if isinstance(count, dict) else 0.0
+            secs = count.get("seconds") if isinstance(count, dict) else None
+            self.count_seconds = float(secs) if secs is not None else self.duration * self.COUNT_SHARE
+            self._blocks: dict[str, TextBlock] = {}
+            self._maxw, self._maxh = maxw, 260 * u
+            self._start = 0.1 + (1 if self.eyebrow else 0) * 0.3  # the value fades in, then counts
+            if self._start + self.count_seconds > self.duration:
+                ctx.warn(f"count-up of {str(spec['value'])[:40]!r} does not finish before the scene ends")
+
+    def shown_text(self, t: float) -> str:
+        """The value text at scene time t: the counted number, or exactly the final text once it is done."""
+        if self.count is None:
+            return str(self.spec["value"])
+        p = ease_out((t - self._start) / self.count_seconds)
+        if p >= 1.0:
+            return str(self.spec["value"])
+        return self.count.format(self.count_from + (self.count.target - self.count_from) * p)
+
+    def _value_block(self, text: str) -> TextBlock:
+        """The value block for `text`, at the final text's size so the number does not jump while it counts."""
+        if text == str(self.spec["value"]):
+            return self.value
+        blk = self._blocks.pop(text, None)
+        if blk is None:
+            c = self.ctx
+            blk = make_block(text, c.display, self.value.size, self._maxw, max_h=self._maxh, align="center",
+                             spacing=1.1, min_size=self.value.size)
+        self._blocks[text] = blk  # most recently used last
+        while len(self._blocks) > self.COUNT_CACHE:
+            self._blocks.pop(next(iter(self._blocks)))
+        return blk
 
     def frame(self, t: float) -> Image.Image:
         c = self.ctx
         img = c.background()
+        value = self._value_block(self.shown_text(t)) if self.count is not None else self.value
         parts = [(b, col, g) for b, col, g in [
             (self.eyebrow, c.theme.accent2, 34), (self.value, c.theme.accent, 34), (self.label, c.theme.fg, 0)] if b]
         total = sum(b.height + g * c.u for b, _, g in parts)
         y = c.cy - total / 2
         for i, (b, col, g) in enumerate(parts):
             a = _appear(t, 0.1 + i * 0.3)
-            blit(img, b, (c.W / 2, y + (1 - a) * 20 * c.u), col, a, "tc")
+            blit(img, value if b is self.value else b, (c.W / 2, y + (1 - a) * 20 * c.u), col, a, "tc")
             y += b.height + g * c.u
         return img
 

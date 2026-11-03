@@ -19,10 +19,14 @@ from .safety import UnsafeInput, resolve_local
 from .scenes import Ctx, Scene, build_scene, make_caption
 from .shots import CaptureError
 from .specs import FORMATS, SpecError, check_frame_budget
-from .textkit import blit, ease_out, make_block
+from .textkit import blit, ease, ease_out, make_block
 from .theme import font
 
-FADE_IN = 0.25
+FADE_IN = 0.25  # the default transition length, seconds (config.DEFAULTS["transition"])
+SLIDE_EASING = "in_out"
+ZOOM_FROM = 1.08  # a zoom transition starts with the new frame this much larger
+CONTACT_DEFAULT_FRACS = (0.35, 0.92)
+MAX_CONTACT_FRAMES = 12
 YT_TITLE_MAX = 100
 YT_DESC_MAX = 5000
 SHORTS_MAX_SECONDS = 180
@@ -99,8 +103,10 @@ class Timeline:
             self.starts.append(t)
             t += sc.duration
         self.total = t
+        default_tr = spec.get("transition") or {"type": "fade", "seconds": FADE_IN}
+        self._transitions = [dict(s.get("transition") or default_tr) for s in scenes_spec]
         self._caps = {i: make_caption(self.ctx, sc.caption) for i, sc in enumerate(self.scenes) if sc.caption}
-        self._last: dict[int, Image.Image] = {}
+        self._last: dict[int, Image.Image] = {}  # at most one entry: the last frame of the scene before this one
         self._wm = self._make_watermark(spec.get("watermark"))
 
     def _make_watermark(self, wm: dict[str, Any] | None) -> tuple[Image.Image, Image.Image, tuple[int, int]] | None:
@@ -154,6 +160,7 @@ class Timeline:
     def _last_frame(self, i: int) -> Image.Image:
         if i not in self._last:
             sc = self.scenes[i]
+            self._last.clear()  # only the previous scene's frame is ever needed (about 6 MB in vertical)
             self._last[i] = self._scene_frame(i, max(0.0, sc.duration - 1 / 30))
         return self._last[i]
 
@@ -171,13 +178,31 @@ class Timeline:
     def frame_at(self, t: float) -> Image.Image:
         i, lt = self.locate(t)
         img = self._scene_frame(i, lt)
-        if i > 0 and lt < FADE_IN:
-            a = lt / FADE_IN
-            img = Image.blend(self._last_frame(i - 1), img, a)
+        tr = self._transitions[i]
+        if i > 0 and tr["type"] != "cut" and lt < tr["seconds"]:
+            img = self._transition(tr["type"], self._last_frame(i - 1), img, lt / tr["seconds"])
         if self._wm:  # constant on every frame, including transitions and the poster
             rgb, mask, xy = self._wm
             img.paste(rgb, xy, mask)
         return img
+
+    @staticmethod
+    def _transition(kind: str, old: Image.Image, new: Image.Image, a: float) -> Image.Image:
+        """The frame `a` (0..1) of the way through the transition from `old` into `new`."""
+        if kind == "slide":  # push: the old frame leaves to the left, the new one enters from the right
+            w = new.width
+            shift = int(round(ease(SLIDE_EASING, a) * w))
+            out = Image.new("RGB", new.size)
+            out.paste(old, (-shift, 0))
+            out.paste(new, (w - shift, 0))
+            return out
+        if kind == "zoom":  # the new frame settles from ZOOM_FROM to 1.0 while it fades in
+            z = ZOOM_FROM - (ZOOM_FROM - 1.0) * ease("out", a)
+            w, h = new.size
+            cw, ch = w / z, h / z
+            box = ((w - cw) / 2, (h - ch) / 2, (w + cw) / 2, (h + ch) / 2)
+            return Image.blend(old, new.resize((w, h), Image.BILINEAR, box=box), a)
+        return Image.blend(old, new, a)  # fade
 
     def poster_time(self) -> float:
         p = self.spec.get("poster", {}) or {}
@@ -189,10 +214,24 @@ class Timeline:
         return self.starts[idx] + min(at, sc.duration - 0.05)
 
 
-def contact_sheet(tl: Timeline, path: Path, cols: int = 4, tile_w: int = 480) -> Path:
+def contact_fracs(frames: int | None) -> tuple[float, ...]:
+    """Where in each scene the contact sheet looks: the two default stills, or `frames` stills spread from just
+    after the scene starts to just before it ends."""
+    if frames is None:
+        return CONTACT_DEFAULT_FRACS
+    if not 1 <= frames <= MAX_CONTACT_FRAMES:
+        raise RenderError(f"contact frames must be between 1 and {MAX_CONTACT_FRAMES}")
+    if frames == 1:
+        return (0.92,)
+    return tuple(0.08 + 0.84 * k / (frames - 1) for k in range(frames))
+
+
+def contact_sheet(tl: Timeline, path: Path, cols: int = 4, tile_w: int = 480,
+                  fracs: tuple[float, ...] = CONTACT_DEFAULT_FRACS) -> Path:
+    """One row of stills per scene when `cols` equals len(fracs); the default is four tiles across."""
     stills: list[tuple[str, Image.Image]] = []
     for i, sc in enumerate(tl.scenes):
-        for frac in (0.35, 0.92):
+        for frac in fracs:
             t = tl.starts[i] + sc.duration * frac
             im = tl.frame_at(t)
             stills.append((f"{i}:{sc.spec['type']} {t:.1f}s", im.resize((tile_w, int(tile_w * im.height / im.width)))))
@@ -273,8 +312,10 @@ def ffmpeg_exe() -> str | None:
 
 def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: float = 1.0,
            music_override: str | None = None, contact: bool = True,
-           runtime: Runtime | None = None, n_formats: int = 1) -> dict[str, Any]:
-    """Render one format. `n_formats` is how many formats this run renders in all, for the frame budget."""
+           runtime: Runtime | None = None, n_formats: int = 1,
+           contact_frames: int | None = None) -> dict[str, Any]:
+    """Render one format. `n_formats` is how many formats this run renders in all, for the frame budget.
+    `contact_frames` sets how many stills per scene the contact sheet has (default: two)."""
     ffmpeg = ffmpeg_exe()
     if ffmpeg is None:
         raise RenderError("ffmpeg not found. Install it (macOS: brew install ffmpeg; Debian/Ubuntu: sudo apt install "
@@ -362,6 +403,11 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         errlog.close()
         if rc != 0:
             raise RenderError("ffmpeg failed:\n" + (work / "ffmpeg.log").read_text(errors="replace")[-1500:])
-        sheet = contact_sheet(tl, out / "contact.png") if contact else None
+        sheet = None
+        if contact:
+            fracs = contact_fracs(contact_frames)
+            sheet = (contact_sheet(tl, out / "contact.png") if contact_frames is None else
+                     contact_sheet(tl, out / "contact.png", cols=len(fracs), tile_w=480 if len(fracs) <= 4 else 320,
+                                   fracs=fracs))
     return {"video": out / "video.mp4", "poster": out / "poster.jpg", "contact": sheet,
             "seconds": total, "warnings": tl.warnings, "size": (W, H)}

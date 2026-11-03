@@ -12,7 +12,7 @@ import yaml
 from . import __version__, legacy
 from .config import CONFIG_FILENAME, config_base, Config, ConfigError, load_config, user_config_path
 from .voice import VoiceError, VoiceServer
-from .render import RenderError, Runtime, render, share_copy
+from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, render, share_copy
 from .safety import UnsafeInput
 from .shots import CaptureError
 from .specs import FORMATS, SpecError, check_frame_budget, load_spec
@@ -81,12 +81,14 @@ def cmd_render(args: argparse.Namespace) -> int:
         raise SpecError("--fps must be an integer between 1 and 60")
     fps = 12 if args.preview else (args.fps or int(spec["fps"]))
     check_frame_budget(sum(s["seconds"] for s in spec["scenes"]), fps, len(formats))
+    if args.contact_frames is not None and not 1 <= args.contact_frames <= MAX_CONTACT_FRAMES:
+        raise SpecError(f"--contact-frames must be an integer between 1 and {MAX_CONTACT_FRAMES}")
     rt = _runtime(spec, cfg, args.music, no_voice=args.no_voice)
     results = {}
     for fmt in formats:
         print(f"rendering {fmt} ...", flush=True)
         results[fmt] = render(spec, fmt, out_dir, fps=fps, scale=scale, music_override=args.music, contact=True, runtime=rt,
-                               n_formats=len(formats))
+                               n_formats=len(formats), contact_frames=args.contact_frames)
     total = next(iter(results.values()))["seconds"]
     text, warns = share_copy(spec, total, formats)
     (out_dir / "share-copy.txt").write_text(text, encoding="utf-8")
@@ -169,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--no-voice", action="store_true",
                    help="skip all narration (music only); no text-to-speech server needed")
     r.add_argument("--preview", action="store_true", help="half size, 12 fps: fast look at timing and layout")
+    r.add_argument("--contact-frames", type=int, metavar="N",
+                   help="stills per scene on the contact sheet, 1-12 (default: 2); one row per scene")
     r.set_defaults(fn=cmd_render)
     i = sub.add_parser("init", help="write a starter spec")
     i.add_argument("template", help=f"one of: {', '.join(_templates())}")

@@ -19,6 +19,7 @@ from .config import (DEFAULTS, HARD_LIMITS, SHARED_KEYS, Config, _absolutize, cl
 from .config import yaml_problem as _yaml_problem
 from .music import NOTE_OFFSETS, SCALES
 from .scenes import SCENE_TYPES, DiagramScene, Scene
+from .textkit import MAX_COUNT_MAGNITUDE, split_count
 from .theme import get_theme
 
 FORMATS = {"landscape": (1920, 1080), "vertical": (1080, 1920), "square": (1080, 1080)}
@@ -35,6 +36,10 @@ REQUIRED = {
     "stat": ["value"],
 }
 MUSIC_STYLES = {"koto", "none"}
+TRANSITIONS = ("fade", "slide", "zoom", "cut")
+TRANSITION_SECONDS = (0.1, 1.0)
+DEFAULT_TRANSITION_SECONDS = 0.25
+STAGGER_SECONDS = (0.1, 3.0)
 WATERMARK_POSITIONS = {"top-left", "top-right", "bottom-left", "bottom-right"}
 NODE_KINDS = ("client", "service", "cache", "db")
 COLOR_NAMES = ("accent", "accent2", "fg", "muted")
@@ -374,6 +379,42 @@ def _bool_field(path: str, v: Any, sc: dict[str, Any], env: _Env) -> bool:
     return _bool(path, v)
 
 
+def _transition(path: str, v: Any, sc: dict[str, Any], env: _Env) -> dict[str, Any]:
+    """`fade`, or {type, seconds}. Normalised to a mapping with both keys."""
+    if isinstance(v, str):
+        v = {"type": v}
+    tr = dict(_mapping(path, v))
+    if not tr:
+        raise SpecError(f"{path} must be one of {', '.join(TRANSITIONS)} or a mapping with type and seconds")
+    _no_unknown(path, tr, ("type", "seconds"), "transition")
+    return {"type": _choice(f"{path}.type", tr.get("type", "fade"), TRANSITIONS),
+            "seconds": _number(f"{path}.seconds", tr.get("seconds", DEFAULT_TRANSITION_SECONDS), *TRANSITION_SECONDS)}
+
+
+def _stagger(path: str, v: Any, sc: dict[str, Any], env: _Env) -> float:
+    return _number(path, v, *STAGGER_SECONDS)
+
+
+def _count(path: str, v: Any, sc: dict[str, Any], env: _Env) -> dict[str, Any] | bool:
+    """`true`, `false` or {from, seconds}: count the one number in `value` up from `from`."""
+    if v is False:
+        return False
+    count = {} if v is True else dict(_mapping(path, v))
+    if v is not True and not count:
+        raise SpecError(f"{path} must be true, false or a mapping with from and seconds")
+    _no_unknown(path, count, ("from", "seconds"), "count")
+    value = sc.get("value")
+    try:
+        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+            raise ValueError("value must contain exactly one number to count")
+        split_count(str(value))
+    except ValueError as e:
+        raise SpecError(f"{path}: {e}") from e
+    return {"from": _number(f"{path}.from", count.get("from", 0), -MAX_COUNT_MAGNITUDE, MAX_COUNT_MAGNITUDE),
+            "seconds": (_number(f"{path}.seconds", count["seconds"], 0.1, env.max_seconds)
+                        if "seconds" in count else None)}
+
+
 # One checker per scene field (common and per type). Each returns the normalised value.
 FIELD_CHECKS: dict[str, Checker] = {
     "type": _scene_type,
@@ -381,6 +422,9 @@ FIELD_CHECKS: dict[str, Checker] = {
     "caption": _text_field,
     "narration": _narration,
     "narration_audio": _narration_audio,
+    "transition": _transition,
+    "stagger": _stagger,
+    "count": _count,
     "title": _text_field,
     "eyebrow": _text_field,
     "subtitle": _text_field,
@@ -623,6 +667,7 @@ TOP_CHECKS: dict[str, Checker] = {
     "watermark": _watermark,
     "meta": _meta,
     "voiceover": _voiceover,
+    "transition": _transition,
     "scenes": _scenes,
     "poster": _poster,
 }

@@ -1,6 +1,7 @@
 """Text measuring, wrapping, fitting and drawing helpers."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from PIL import Image, ImageDraw
@@ -104,3 +105,67 @@ def ease_out(t: float) -> float:
 def ease_in_out(t: float) -> float:
     t = max(0.0, min(1.0, t))
     return 3 * t * t - 2 * t * t * t
+
+
+def ease_back(t: float) -> float:
+    """Ease out with a small overshoot (a drop that settles)."""
+    t = max(0.0, min(1.0, t)) - 1.0
+    c1 = 1.70158
+    return 1 + (c1 + 1) * t ** 3 + c1 * t ** 2
+
+
+def ease_linear(t: float) -> float:
+    return max(0.0, min(1.0, t))
+
+
+# Named easings. Easing is internal: no spec key picks one per element.
+EASINGS = {"linear": ease_linear, "out": ease_out, "in_out": ease_in_out, "back": ease_back}
+
+
+def ease(name: str, t: float) -> float:
+    """Apply the easing `name` (one of EASINGS) to t; t is clamped to 0..1 first."""
+    return EASINGS[name](t)
+
+
+# --- count-up numbers -----------------------------------------------------------------------------------
+
+NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
+MAX_COUNT_MAGNITUDE = 1e15
+MAX_COUNT_DECIMALS = 6
+
+
+@dataclass(frozen=True)
+class CountParts:
+    """A text with exactly one number in it, taken apart so the number can be counted up."""
+    prefix: str
+    suffix: str
+    target: float
+    decimals: int
+    grouped: bool    # the number is written with thousands separators
+    signed: bool     # the number is written with an explicit "+"
+
+    def format(self, value: float) -> str:
+        """The text with `value` in place of the number. The format spec is built here from flags, never from
+        user text, so nothing a spec says reaches str.format."""
+        spec = ("+" if self.signed else "") + ("," if self.grouped else "") + f".{self.decimals}f"
+        out = format(value, spec)
+        if out.lstrip("+-").strip("0.,") == "":  # "-0" and "-0.0" while counting up from below zero
+            out = out.replace("-", "")
+        return self.prefix + out + self.suffix
+
+
+def split_count(text: str) -> CountParts:
+    """Parse the one number in `text`. Raises ValueError when there is not exactly one, or it cannot be counted."""
+    found = list(NUMBER_RE.finditer(text))
+    if len(found) != 1:
+        raise ValueError("value must contain exactly one number to count")
+    m = found[0]
+    raw = m.group(0)
+    digits = raw.replace(",", "")
+    decimals = len(digits.split(".")[1]) if "." in digits else 0
+    if decimals > MAX_COUNT_DECIMALS:
+        raise ValueError(f"the number in value has {decimals} decimals; the limit is {MAX_COUNT_DECIMALS}")
+    target = float(digits)
+    if abs(target) > MAX_COUNT_MAGNITUDE:
+        raise ValueError("the number in value is too large to count")
+    return CountParts(text[:m.start()], text[m.end():], target, decimals, "," in raw, raw.startswith("+"))

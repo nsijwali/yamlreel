@@ -1,0 +1,333 @@
+"""Motion core (S1): transitions, easing, stagger, count-up numbers and contact frames."""
+from __future__ import annotations
+
+import pytest
+import yaml
+from PIL import Image, ImageChops
+
+from yamlreel import legacy, render as render_mod
+from yamlreel.cli import main
+from yamlreel.render import RenderError, Timeline, contact_fracs, contact_sheet, ffmpeg_exe
+from yamlreel.scenes import Ctx, Scene, StatScene
+from yamlreel.scenebase import Ctx as BaseCtx, Scene as BaseScene
+from yamlreel.specs import SpecError, validate
+from yamlreel.textkit import EASINGS, ease, ease_in_out, ease_out, split_count
+
+
+@pytest.fixture(autouse=True)
+def isolated(tmp_path, monkeypatch):
+    """Never read the developer's own config; run from a scratch folder."""
+    for prefix in ("YAMLREEL", legacy.LEGACY.upper()):
+        for name in ("CONFIG", "FONT_DIR", "CHROMIUM"):
+            monkeypatch.delenv(f"{prefix}_{name}", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("YAMLREEL_CONFIG", str(tmp_path / "no-config.yaml"))
+    monkeypatch.chdir(tmp_path)
+    legacy._warned.clear()
+
+
+TITLE = {"type": "title", "title": "First", "seconds": 2}
+BULLETS = {"type": "bullets", "title": "Steps", "items": ["one", "two", "three"], "seconds": 5}
+STAT = {"type": "stat", "value": "10,000,000 rows", "label": "scanned", "seconds": 4, "count": True}
+
+
+def timeline(tmp_path, *scenes, fmt="landscape", **extra) -> Timeline:
+    return Timeline(validate({"scenes": list(scenes), **extra}), fmt, tmp_path, scale=0.25)
+
+
+def same(a: Image.Image, b: Image.Image) -> bool:
+    return ImageChops.difference(a.convert("RGB"), b.convert("RGB")).getbbox() is None
+
+
+# --- the move to scenebase ------------------------------------------------------------------------------
+
+def test_scenes_still_reexports_the_base_classes():
+    assert Ctx is BaseCtx and Scene is BaseScene
+
+
+# --- easing ---------------------------------------------------------------------------------------------
+
+def test_easings_are_anchored_and_clamped():
+    assert set(EASINGS) == {"linear", "out", "in_out", "back"}
+    for name in EASINGS:
+        assert ease(name, 0) == pytest.approx(0)
+        assert ease(name, 1) == pytest.approx(1)
+        assert ease(name, -3) == pytest.approx(0) and ease(name, 9) == pytest.approx(1)
+    assert ease("linear", 0.3) == pytest.approx(0.3)
+    assert ease("out", 0.4) == ease_out(0.4) and ease("in_out", 0.4) == ease_in_out(0.4)
+    assert max(ease("back", k / 100) for k in range(101)) > 1.0  # it overshoots, then settles
+    with pytest.raises(KeyError):
+        ease("bounce", 0.5)
+
+
+# --- transitions ----------------------------------------------------------------------------------------
+
+def test_default_fade_equals_image_blend_pixel_for_pixel(tmp_path):
+    tl = timeline(tmp_path, TITLE, BULLETS)
+    lt = 0.1
+    old = tl._scene_frame(0, tl.scenes[0].duration - 1 / 30)
+    new = tl._scene_frame(1, lt)
+    assert same(tl.frame_at(tl.starts[1] + lt), Image.blend(old, new, lt / 0.25))
+    assert same(tl.frame_at(tl.starts[1] + 0.3), tl._scene_frame(1, 0.3))  # fade over: just the scene
+
+
+def test_cut_returns_the_current_frame(tmp_path):
+    tl = timeline(tmp_path, TITLE, {**BULLETS, "transition": "cut"})
+    assert same(tl.frame_at(tl.starts[1] + 0.05), tl._scene_frame(1, 0.05))
+
+
+def test_slide_pushes_the_old_frame_out_to_the_left():
+    old = Image.new("RGB", (100, 40), (255, 0, 0))
+    old.paste((0, 255, 0), (50, 0, 100, 40))   # left red, right green
+    new = Image.new("RGB", (100, 40), (0, 0, 255))
+    new.paste((255, 255, 0), (50, 0, 100, 40))  # left blue, right yellow
+    out = Timeline._transition("slide", old, new, 0.5)  # in_out(0.5) = 0.5: shifted by half the width
+    assert out.getpixel((10, 20)) == (0, 255, 0)    # the old frame's right half is now in the left half
+    assert out.getpixel((90, 20)) == (0, 0, 255)    # the new frame's left half has entered on the right
+    assert Timeline._transition("slide", old, new, 0.0).getpixel((10, 20)) == (255, 0, 0)
+    assert Timeline._transition("slide", old, new, 1.0).getpixel((90, 20)) == (255, 255, 0)
+
+
+def test_slide_runs_through_the_timeline(tmp_path):
+    tl = timeline(tmp_path, TITLE, {**BULLETS, "transition": {"type": "slide", "seconds": 0.4}})
+    mid = tl.frame_at(tl.starts[1] + 0.2)
+    assert mid.size == (tl.ctx.W, tl.ctx.H)
+    assert not same(mid, tl._scene_frame(1, 0.2))
+    assert same(tl.frame_at(tl.starts[1] + 0.4), tl._scene_frame(1, 0.4))  # done after `seconds`
+
+
+def test_zoom_stays_in_frame_and_ends_on_the_new_frame():
+    old = Image.new("RGB", (160, 90), (10, 10, 10))
+    new = Image.new("RGB", (160, 90), (200, 100, 50))
+    new.paste((0, 0, 0), (0, 0, 80, 45))
+    for a in (0.0, 0.2, 0.5, 0.99, 1.0):
+        out = Timeline._transition("zoom", old, new, a)
+        assert out.size == new.size
+    assert same(Timeline._transition("zoom", old, new, 0.0), old)
+    assert same(Timeline._transition("zoom", old, new, 1.0), new)
+    # mid-way the new frame is enlarged around the centre, so its top-left corner is cropped away
+    corner = Timeline._transition("zoom", old, new, 0.5).getpixel((0, 0))
+    assert corner != (0, 0, 0)
+
+
+def test_last_holds_at_most_one_frame(tmp_path):
+    tl = timeline(tmp_path, TITLE, BULLETS, STAT, TITLE)
+    t = 0.0
+    while t < tl.total:
+        tl.frame_at(t)
+        assert len(tl._last) <= 1
+        t += 0.1
+    assert max(tl._last) == len(tl.scenes) - 2
+
+
+def test_cut_never_renders_the_previous_scene(tmp_path):
+    tl = timeline(tmp_path, TITLE, BULLETS, transition="cut")
+    tl.frame_at(tl.starts[1] + 0.05)
+    assert tl._last == {}
+
+
+def test_top_level_default_and_scene_override(tmp_path):
+    spec = validate({"transition": {"type": "zoom", "seconds": 0.5},
+                     "scenes": [TITLE, BULLETS, {**STAT, "transition": "cut"}]})
+    assert spec["transition"] == {"type": "zoom", "seconds": 0.5}
+    assert spec["scenes"][2]["transition"] == {"type": "cut", "seconds": 0.25}
+    tl = Timeline(spec, "landscape", tmp_path, scale=0.25)
+    assert [t["type"] for t in tl._transitions] == ["zoom", "zoom", "cut"]
+
+
+def test_transition_defaults_to_a_quarter_second_fade():
+    spec = validate({"scenes": [TITLE]})
+    assert spec["transition"] == {"type": "fade", "seconds": 0.25}
+    assert validate({"transition": "slide", "scenes": [TITLE]})["transition"] == {"type": "slide", "seconds": 0.25}
+
+
+@pytest.mark.parametrize("bad", [
+    {"type": "fade", "seconds": 0.05}, {"type": "slide", "seconds": 1.5}, {"type": "zoom", "seconds": "slow"},
+    {"type": "wipe"}, "wipe", {}, {"type": "fade", "speed": 1}, 3, ["fade"],
+])
+def test_bad_transitions_are_rejected(bad):
+    if bad != {}:  # a top-level {} merges into the default; on a scene it is an error
+        with pytest.raises(SpecError, match="transition"):
+            validate({"transition": bad, "scenes": [TITLE]})
+    with pytest.raises(SpecError, match=r"scenes\[1\]\.transition"):
+        validate({"scenes": [TITLE, {**TITLE, "transition": bad}]})
+
+
+def test_transition_seconds_message_names_the_range():
+    with pytest.raises(SpecError, match=r"scenes\[0\]\.transition\.seconds must be a number between 0\.1 and 1"):
+        validate({"scenes": [{**TITLE, "transition": {"type": "fade", "seconds": 2}}]})
+
+
+# --- stagger --------------------------------------------------------------------------------------------
+
+def test_stagger_changes_when_bullets_appear(tmp_path):
+    fast = timeline(tmp_path, {**BULLETS, "stagger": 0.1})
+    slow = timeline(tmp_path, {**BULLETS, "stagger": 3.0})
+    default = timeline(tmp_path, BULLETS)
+    t = 1.3  # the third bullet is up with a 0.1 s stagger and not started with a 3 s one
+    assert not same(fast.frame_at(t), slow.frame_at(t))
+    assert not same(fast.frame_at(t), default.frame_at(t))
+    assert same(fast.frame_at(5.0 - 1 / 30), default.frame_at(5.0 - 1 / 30))  # all bullets in by the end
+    assert default.scenes[0].stagger is None and fast.scenes[0].stagger == 0.1
+
+
+def test_unset_stagger_keeps_the_computed_step(tmp_path):
+    a = timeline(tmp_path, BULLETS)
+    b = timeline(tmp_path, {**BULLETS, "stagger": 1.1})  # min(1.1, (5 - 1.2) / 3) = 1.1 is the old step here
+    assert same(a.frame_at(2.0), b.frame_at(2.0))
+
+
+@pytest.mark.parametrize("bad", [0.05, 3.5, "x", True, {}])
+def test_bad_stagger_is_rejected(bad):
+    with pytest.raises(SpecError, match=r"scenes\[0\]\.stagger"):
+        validate({"scenes": [{**BULLETS, "stagger": bad}]})
+
+
+def test_stagger_is_only_for_scenes_that_have_it():
+    with pytest.raises(SpecError, match="unknown field"):
+        validate({"scenes": [{**TITLE, "stagger": 0.5}]})
+
+
+# --- count-up -------------------------------------------------------------------------------------------
+
+def stat_scene(tmp_path, **kw) -> StatScene:
+    tl = timeline(tmp_path, {**STAT, **kw})
+    sc = tl.scenes[0]
+    assert isinstance(sc, StatScene)
+    return sc
+
+
+def test_count_starts_at_zero_passes_through_formatted_values_and_ends_exact(tmp_path):
+    sc = stat_scene(tmp_path)
+    assert sc.shown_text(0.0) == "0 rows"
+    mid = sc.shown_text(1.2)
+    number = mid.removesuffix(" rows")
+    assert 0 < int(number.replace(",", "")) < 10_000_000 and "," in number
+    assert sc.shown_text(3.9) == "10,000,000 rows"
+    assert sc.shown_text(0.0) != sc.shown_text(1.2) != sc.shown_text(3.9)
+    # monotonic
+    vals = [int(sc.shown_text(k * 0.05).removesuffix(" rows").replace(",", "")) for k in range(80)]
+    assert vals == sorted(vals)
+
+
+def test_count_frames_differ_and_the_last_one_equals_a_plain_stat(tmp_path):
+    counting = timeline(tmp_path, STAT)
+    plain = timeline(tmp_path, {k: v for k, v in STAT.items() if k != "count"})
+    assert not same(counting.frame_at(1.0), plain.frame_at(1.0))
+    assert same(counting.frame_at(3.9), plain.frame_at(3.9))
+
+
+def test_count_from_and_seconds_and_formats(tmp_path):
+    sc = stat_scene(tmp_path, value="$12.50 saved", count={"from": 10, "seconds": 2})
+    assert sc.shown_text(0.0) == "$10.00 saved"
+    assert sc.shown_text(3.0) == "$12.50 saved"
+    down = stat_scene(tmp_path, value="-5%", count={"from": 20, "seconds": 2})
+    assert down.shown_text(0.0) == "20%" and down.shown_text(3.9) == "-5%"
+    signed = stat_scene(tmp_path, value="+40 pts", count={"from": 0, "seconds": 2})
+    assert signed.shown_text(0.0) == "+0 pts"
+    assert signed.shown_text(3.9) == "+40 pts"
+
+
+def test_count_never_shows_a_negative_zero(tmp_path):
+    sc = stat_scene(tmp_path, value="5 left", count={"from": -0.4, "seconds": 2})
+    assert not sc.shown_text(0.0).startswith("-")
+
+
+def test_a_user_string_never_reaches_str_format(tmp_path):
+    sc = stat_scene(tmp_path, value="{a.__class__} 7 {x}", count={"from": 0, "seconds": 2})
+    assert sc.shown_text(0.0) == "{a.__class__} 0 {x}"
+    assert sc.shown_text(3.9) == "{a.__class__} 7 {x}"
+    sc.frame(0.5)  # renders without a format error
+
+
+def test_count_value_block_cache_is_bounded_and_reused(tmp_path):
+    sc = stat_scene(tmp_path)
+    for k in range(200):
+        sc.frame(0.4 + k * 0.01)
+    assert len(sc._blocks) <= StatScene.COUNT_CACHE
+    text = sc.shown_text(1.0)
+    assert sc._value_block(text) is sc._value_block(text)
+
+
+def test_count_false_is_a_plain_stat(tmp_path):
+    sc = stat_scene(tmp_path, count=False)
+    assert sc.count is None and sc.shown_text(0.0) == "10,000,000 rows"
+
+
+@pytest.mark.parametrize("value", ["no digits here", "3 of 10", "v2 build 7", "1-2"])
+def test_count_needs_exactly_one_number(value):
+    with pytest.raises(SpecError) as e:
+        validate({"scenes": [TITLE, TITLE, TITLE, {**STAT, "value": value}]})
+    assert str(e.value) == "scenes[3].count: value must contain exactly one number to count"
+
+
+@pytest.mark.parametrize("count,msg", [
+    ({"from": "x"}, r"count\.from must be a number"), ({"seconds": 0}, r"count\.seconds must be a number"),
+    ({"to": 5}, "unknown field"), ({}, "count must be"), ("yes", "count must be a mapping"),
+])
+def test_bad_count_is_rejected(count, msg):
+    with pytest.raises(SpecError, match=msg):
+        validate({"scenes": [{**STAT, "count": count}]})
+
+
+def test_count_rejects_unbounded_numbers():
+    with pytest.raises(SpecError, match="too large"):
+        validate({"scenes": [{**STAT, "value": "9" * 40}]})
+    with pytest.raises(SpecError, match="decimals"):
+        validate({"scenes": [{**STAT, "value": "1.1234567"}]})
+
+
+def test_count_is_only_for_stat_scenes():
+    with pytest.raises(SpecError, match="unknown field"):
+        validate({"scenes": [{**BULLETS, "count": True}]})
+
+
+def test_count_that_cannot_finish_warns(tmp_path):
+    tl = timeline(tmp_path, {**STAT, "seconds": 2, "count": {"seconds": 5}})
+    assert any("does not finish" in w for w in tl.warnings)
+
+
+def test_split_count_parts():
+    p = split_count("About 1,250.5 ms")
+    assert (p.prefix, p.suffix, p.target, p.decimals, p.grouped) == ("About ", " ms", 1250.5, 1, True)
+    assert p.format(3.14159) == "About 3.1 ms"  # no separator below 1000
+    assert p.format(1234567.0) == "About 1,234,567.0 ms"
+    with pytest.raises(ValueError):
+        split_count("a 1 b 2")
+
+
+# --- contact frames -------------------------------------------------------------------------------------
+
+def test_contact_fracs():
+    assert contact_fracs(None) == (0.35, 0.92)
+    assert len(contact_fracs(4)) == 4 and list(contact_fracs(6)) == sorted(contact_fracs(6))
+    assert all(0 < f < 1 for f in contact_fracs(12)) and contact_fracs(1) == (0.92,)
+    for bad in (0, 13, -1):
+        with pytest.raises(RenderError, match="contact frames"):
+            contact_fracs(bad)
+
+
+def test_contact_sheet_has_the_requested_tiles_per_scene(tmp_path):
+    tl = timeline(tmp_path, TITLE, BULLETS, STAT)
+    four = Image.open(contact_sheet(tl, tmp_path / "four.png", cols=4, fracs=contact_fracs(4)))
+    assert four.width == 4 * 480
+    tile_h = int(480 * tl.ctx.H / tl.ctx.W)
+    assert four.height == 3 * (tile_h + 24)  # one row of 4 tiles per scene
+    default = Image.open(contact_sheet(tl, tmp_path / "default.png"))
+    assert default.width == 4 * 480 and default.height == 2 * (tile_h + 24)  # 6 tiles, as before
+
+
+def test_contact_frames_flag_on_the_command_line(tmp_path, capsys):
+    if ffmpeg_exe() is None:
+        pytest.skip("no ffmpeg")
+    spec = tmp_path / "s.yaml"
+    spec.write_text(yaml.safe_dump({"music": {"style": "none"}, "scenes": [{**TITLE, "seconds": 1}, {**STAT, "seconds": 1}]}))
+    out = tmp_path / "o"
+    assert main(["render", str(spec), "--out", str(out), "--format", "square", "--preview", "--no-voice",
+                 "--contact-frames", "4"]) == 0
+    sheet = Image.open(out / "square" / "contact.png")
+    assert sheet.width == 4 * 480
+    assert sheet.height == 2 * (480 + 24)  # two scenes, one row each
+    assert main(["render", str(spec), "--out", str(out), "--contact-frames", "13"]) == 1
+    assert "--contact-frames must be an integer between 1 and 12" in capsys.readouterr().err
+    assert render_mod.MAX_CONTACT_FRAMES == 12

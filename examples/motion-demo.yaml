@@ -1,0 +1,41 @@
+# Motion core demo: per-scene transitions, staggered bullets and a counting-up number.
+# Render: yamlreel render examples/motion-demo.yaml --out out --preview --no-voice --contact-frames 6
+# `--contact-frames 6` writes a contact sheet with six stills per scene (one row per scene), so you can check
+# that the reveals progress and nothing overlaps.
+meta:
+  title: Why binary search is fast
+  tags: [algorithms, search]
+theme: midnight
+formats: [vertical, landscape]
+transition: {type: fade, seconds: 0.25}   # the default for every scene; each scene can override it
+music: {style: koto, seed: 7}
+scenes:
+  - type: title
+    eyebrow: Algorithms
+    title: Binary search
+    subtitle: Halve the problem every step
+    seconds: 3
+  - type: bullets
+    transition: {type: slide, seconds: 0.4}
+    title: How it works
+    items:
+      - Start with a sorted list
+      - Look at the middle item
+      - Keep the half that can hold the answer
+      - Repeat until one item is left
+    stagger: 0.7
+    seconds: 5
+  - type: stat
+    transition: {type: zoom, seconds: 0.4}
+    eyebrow: Linear scan
+    value: "1,000,000"
+    count: {from: 0, seconds: 2}
+    label: steps in the worst case
+    seconds: 3.5
+  - type: stat
+    transition: cut
+    eyebrow: Binary search
+    value: "20"
+    count: true
+    label: steps for the same million items
+    seconds: 3

@@ -58,7 +58,7 @@ def _scene_reads(cls) -> set[str]:
     tree = ast.parse(textwrap.dedent(inspect.getsource(cls.__init__)))
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            helper = getattr(scenes_mod, node.func.id, None)
+            helper = getattr(sys.modules[cls.__module__], node.func.id, None)
             if inspect.isfunction(helper) and "spec" in inspect.signature(helper).parameters:
                 read |= _literal_keys(helper, {"spec"})
     return read
