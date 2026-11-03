@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import math
 import re
-from pathlib import Path
 from typing import Any, ClassVar
 
 from PIL import Image, ImageDraw, ImageFilter
@@ -185,6 +184,9 @@ class BulletsScene(Scene):
         self.th = th
         stagger = spec.get("stagger")
         self.stagger = float(stagger) if stagger is not None else None  # replaces the computed step when set
+        if self.stagger is not None and 0.5 + (len(self.items) - 1) * self.stagger + 0.5 > self.duration:
+            ctx.warn(f"bullets stagger {self.stagger:g}s: the last of {len(self.items)} items is not fully shown "
+                     f"before the {self.duration:g}s scene ends")
 
     def frame(self, t: float) -> Image.Image:
         c = self.ctx
@@ -230,6 +232,12 @@ class StatScene(Scene):
             self._blocks: dict[str, TextBlock] = {}
             self._maxw, self._maxh = maxw, 260 * u
             self._start = 0.1 + (1 if self.eyebrow else 0) * 0.3  # the value fades in, then counts
+            from_text = self.count.format(self.count_from)
+            if from_text != str(spec["value"]):
+                wide = make_block(from_text, ctx.display, self.value.size, 10 * maxw, min_size=self.value.size).width
+                if wide > self.value.width:
+                    ctx.warn(f"count-up of {str(spec['value'])[:40]!r} starts wider ({from_text[:40]!r}) than its "
+                             "final text, so it may crowd the edges or move while it counts")
             if self._start + self.count_seconds > self.duration:
                 ctx.warn(f"count-up of {str(spec['value'])[:40]!r} does not finish before the scene ends")
 

@@ -172,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="skip all narration (music only); no text-to-speech server needed")
     r.add_argument("--preview", action="store_true", help="half size, 12 fps: fast look at timing and layout")
     r.add_argument("--contact-frames", type=int, metavar="N",
-                   help="stills per scene on the contact sheet, 1-12 (default: 2); one row per scene")
+                   help="stills per scene on the contact sheet, 1-8 (default: 2); one row per scene")
     r.set_defaults(fn=cmd_render)
     i = sub.add_parser("init", help="write a starter spec")
     i.add_argument("template", help=f"one of: {', '.join(_templates())}")

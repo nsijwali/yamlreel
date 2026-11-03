@@ -129,7 +129,9 @@ def ease(name: str, t: float) -> float:
 
 # --- count-up numbers -----------------------------------------------------------------------------------
 
-NUMBER_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
+# One number: optional sign (not a hyphen glued to a word or digit, as in "COVID-19" or "10-20"), digits with
+# well-formed thousands groups or none, optional decimals. ASCII digits only; a trailing "," or "." is not part of it.
+NUMBER_RE = re.compile(r"(?:(?<![A-Za-z0-9])[-+])?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?", re.ASCII)
 MAX_COUNT_MAGNITUDE = 1e15
 MAX_COUNT_DECIMALS = 6
 
@@ -150,7 +152,7 @@ class CountParts:
         spec = ("+" if self.signed else "") + ("," if self.grouped else "") + f".{self.decimals}f"
         out = format(value, spec)
         if out.lstrip("+-").strip("0.,") == "":  # "-0" and "-0.0" while counting up from below zero
-            out = out.replace("-", "")
+            out = ("+" if self.signed else "") + out.lstrip("+-")
         return self.prefix + out + self.suffix
 
 

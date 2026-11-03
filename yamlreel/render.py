@@ -26,7 +26,8 @@ FADE_IN = 0.25  # the default transition length, seconds (config.DEFAULTS["trans
 SLIDE_EASING = "in_out"
 ZOOM_FROM = 1.08  # a zoom transition starts with the new frame this much larger
 CONTACT_DEFAULT_FRACS = (0.35, 0.92)
-MAX_CONTACT_FRAMES = 12
+MAX_CONTACT_FRAMES = 8
+CONTACT_COLS = 4  # tiles across a default sheet
 YT_TITLE_MAX = 100
 YT_DESC_MAX = 5000
 SHORTS_MAX_SECONDS = 180
@@ -105,6 +106,11 @@ class Timeline:
         self.total = t
         default_tr = spec.get("transition") or {"type": "fade", "seconds": FADE_IN}
         self._transitions = [dict(s.get("transition") or default_tr) for s in scenes_spec]
+        for i, (tr, sc) in enumerate(zip(self._transitions, self.scenes)):
+            if i > 0 and tr["type"] != "cut" and tr["seconds"] > sc.duration:
+                self.ctx.warn(f"scenes[{i}]: the {tr['type']} transition ({tr['seconds']:g}s) is longer than the "
+                              f"scene ({sc.duration:.2f}s); shortened to fit")
+                tr["seconds"] = sc.duration
         self._caps = {i: make_caption(self.ctx, sc.caption) for i, sc in enumerate(self.scenes) if sc.caption}
         self._last: dict[int, Image.Image] = {}  # at most one entry: the last frame of the scene before this one
         self._wm = self._make_watermark(spec.get("watermark"))
@@ -216,8 +222,8 @@ class Timeline:
 
 def contact_fracs(frames: int | None) -> tuple[float, ...]:
     """Where in each scene the contact sheet looks: the two default stills, or `frames` stills spread from just
-    after the scene starts to just before it ends."""
-    if frames is None:
+    after the scene starts to just before it ends. Two stills are the default ones, so N=2 matches no flag."""
+    if frames is None or frames == 2:
         return CONTACT_DEFAULT_FRACS
     if not 1 <= frames <= MAX_CONTACT_FRAMES:
         raise RenderError(f"contact frames must be between 1 and {MAX_CONTACT_FRAMES}")
@@ -226,25 +232,29 @@ def contact_fracs(frames: int | None) -> tuple[float, ...]:
     return tuple(0.08 + 0.84 * k / (frames - 1) for k in range(frames))
 
 
-def contact_sheet(tl: Timeline, path: Path, cols: int = 4, tile_w: int = 480,
+def contact_sheet(tl: Timeline, path: Path, cols: int | None = None, tile_w: int | None = None,
                   fracs: tuple[float, ...] = CONTACT_DEFAULT_FRACS) -> Path:
-    """One row of stills per scene when `cols` equals len(fracs); the default is four tiles across."""
-    stills: list[tuple[str, Image.Image]] = []
+    """Stills of every scene at the `fracs` points, each tile pasted into a sheet of the final size as it is
+    rendered. By default each scene has one row of len(fracs) tiles; the default two stills are four tiles across, two scenes
+    per row."""
+    if cols is None:
+        cols = CONTACT_COLS if fracs == CONTACT_DEFAULT_FRACS else len(fracs)
+    if tile_w is None:
+        tile_w = 480 if cols <= 4 else 320
+    tile_h = int(tile_w * tl.ctx.H / tl.ctx.W)
+    n_tiles = len(tl.scenes) * len(fracs)
+    label_h = 24
+    sheet = Image.new("RGB", (cols * tile_w, ((n_tiles + cols - 1) // cols) * (tile_h + label_h)), (16, 16, 16))
+    d = ImageDraw.Draw(sheet)
+    f = font("sans", 15)
+    n = 0
     for i, sc in enumerate(tl.scenes):
         for frac in fracs:
             t = tl.starts[i] + sc.duration * frac
-            im = tl.frame_at(t)
-            stills.append((f"{i}:{sc.spec['type']} {t:.1f}s", im.resize((tile_w, int(tile_w * im.height / im.width)))))
-    th = tile_h = stills[0][1].height
-    rows = (len(stills) + cols - 1) // cols
-    label_h = 24
-    sheet = Image.new("RGB", (cols * tile_w, rows * (tile_h + label_h)), (16, 16, 16))
-    d = ImageDraw.Draw(sheet)
-    f = font("sans", 15)
-    for n, (label, im) in enumerate(stills):
-        x, y = (n % cols) * tile_w, (n // cols) * (tile_h + label_h)
-        sheet.paste(im, (x, y + label_h))
-        d.text((x + 6, y + 4), label, font=f, fill=(220, 220, 220))
+            x, y = (n % cols) * tile_w, (n // cols) * (tile_h + label_h)
+            sheet.paste(tl.frame_at(t).resize((tile_w, tile_h)), (x, y + label_h))
+            d.text((x + 6, y + 4), f"{i}:{sc.spec['type']} {t:.1f}s", font=f, fill=(220, 220, 220))
+            n += 1
     sheet.save(path)
     return path
 
@@ -406,8 +416,6 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         sheet = None
         if contact:
             fracs = contact_fracs(contact_frames)
-            sheet = (contact_sheet(tl, out / "contact.png") if contact_frames is None else
-                     contact_sheet(tl, out / "contact.png", cols=len(fracs), tile_w=480 if len(fracs) <= 4 else 320,
-                                   fracs=fracs))
+            sheet = contact_sheet(tl, out / "contact.png", fracs=fracs)
     return {"video": out / "video.mp4", "poster": out / "poster.jpg", "contact": sheet,
             "seconds": total, "warnings": tl.warnings, "size": (W, H)}

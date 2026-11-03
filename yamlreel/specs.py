@@ -7,7 +7,7 @@ merged over the configuration. Unknown keys at any level are errors. Messages fo
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -194,6 +194,7 @@ class _Env:
     max_seconds: float = HARD_LIMITS["max_seconds"]
     max_scenes: int = HARD_LIMITS["max_scenes"]
     capped: frozenset[str] = frozenset()  # limits that were lowered to their absolute limit
+    transition: dict[str, Any] = field(default_factory=lambda: {"type": "fade", "seconds": DEFAULT_TRANSITION_SECONDS})
 
     def note(self, key: str) -> str:
         suffix = f", capped at the absolute limit {HARD_LIMITS[key]}" if key in self.capped else ""
@@ -379,16 +380,27 @@ def _bool_field(path: str, v: Any, sc: dict[str, Any], env: _Env) -> bool:
     return _bool(path, v)
 
 
-def _transition(path: str, v: Any, sc: dict[str, Any], env: _Env) -> dict[str, Any]:
-    """`fade`, or {type, seconds}. Normalised to a mapping with both keys."""
+def _transition_from(path: str, v: Any, base: dict[str, Any]) -> dict[str, Any]:
+    """`fade`, or {type, seconds}. A field that is not set is taken from `base`. Normalised to both keys."""
     if isinstance(v, str):
         v = {"type": v}
     tr = dict(_mapping(path, v))
     if not tr:
         raise SpecError(f"{path} must be one of {', '.join(TRANSITIONS)} or a mapping with type and seconds")
     _no_unknown(path, tr, ("type", "seconds"), "transition")
-    return {"type": _choice(f"{path}.type", tr.get("type", "fade"), TRANSITIONS),
-            "seconds": _number(f"{path}.seconds", tr.get("seconds", DEFAULT_TRANSITION_SECONDS), *TRANSITION_SECONDS)}
+    return {"type": _choice(f"{path}.type", tr.get("type", base["type"]), TRANSITIONS),
+            "seconds": _number(f"{path}.seconds", tr.get("seconds", base["seconds"]), *TRANSITION_SECONDS)}
+
+
+def _transition_top(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any]:
+    """The default for every scene; the scenes are checked after it and inherit what they leave out."""
+    env.transition = _transition_from(path, v, {"type": "fade", "seconds": DEFAULT_TRANSITION_SECONDS})
+    return dict(env.transition)
+
+
+def _transition(path: str, v: Any, sc: dict[str, Any], env: _Env) -> dict[str, Any]:
+    """A scene's transition: what it sets, and the top-level transition for the rest."""
+    return _transition_from(path, v, env.transition)
 
 
 def _stagger(path: str, v: Any, sc: dict[str, Any], env: _Env) -> float:
@@ -667,7 +679,7 @@ TOP_CHECKS: dict[str, Checker] = {
     "watermark": _watermark,
     "meta": _meta,
     "voiceover": _voiceover,
-    "transition": _transition,
+    "transition": _transition_top,
     "scenes": _scenes,
     "poster": _poster,
 }
@@ -686,7 +698,13 @@ def validate(raw: Any, config: Config | None = None, base_dir: Path | None = Non
     normalize_music(raw)
     if base_dir is not None:
         _absolutize(raw, base_dir)  # paths in a spec are relative to the spec
-    spec: dict[str, Any] = merge(cfg.data, raw)
+    base = dict(cfg.data)
+    for scope in (base, raw):  # `transition: slide` is {type: slide} before the merge, so a later {seconds: ...} adds to it
+        if isinstance(scope.get("transition"), str):
+            scope["transition"] = {"type": scope["transition"]}
+        elif "transition" in scope and scope["transition"] is None:  # `transition: null` is the same as not set
+            del scope["transition"]
+    spec: dict[str, Any] = merge(base, raw)
     for key, default in DEFAULTS.items():
         spec.setdefault(key, copy.deepcopy(default))
     spec.setdefault("scenes", None)  # reported by the scenes check

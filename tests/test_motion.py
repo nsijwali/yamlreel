@@ -105,9 +105,24 @@ def test_zoom_stays_in_frame_and_ends_on_the_new_frame():
         assert out.size == new.size
     assert same(Timeline._transition("zoom", old, new, 0.0), old)
     assert same(Timeline._transition("zoom", old, new, 1.0), new)
-    # mid-way the new frame is enlarged around the centre, so its top-left corner is cropped away
-    corner = Timeline._transition("zoom", old, new, 0.5).getpixel((0, 0))
-    assert corner != (0, 0, 0)
+    # mid-way the new frame is the centre crop of 1/z of its size, scaled back up (z = ease("out", 0.5) blend)
+    z = render_mod.ZOOM_FROM - (render_mod.ZOOM_FROM - 1.0) * ease("out", 0.5)
+    w, h = new.size
+    cw, ch = w / z, h / z
+    box = ((w - cw) / 2, (h - ch) / 2, (w + cw) / 2, (h + ch) / 2)
+    expected = Image.blend(old, new.resize((w, h), Image.BILINEAR, box=box), 0.5)
+    assert same(Timeline._transition("zoom", old, new, 0.5), expected)
+
+
+def test_zoom_enlarges_the_new_frame_around_its_centre():
+    """With old == new a plain blend returns the image unchanged, so any difference is the zoom itself."""
+    img = Image.new("RGB", (160, 90), (0, 0, 0))
+    for x in range(0, 160, 16):
+        img.paste((255, 255, 255), (x, 0, x + 4, 90))  # vertical stripes
+    assert same(Timeline._transition("fade", img, img, 0.3), img)  # the control: no zoom, no change
+    assert same(Timeline._transition("zoom", img, img, 1.0), img)  # settled
+    zoomed = Timeline._transition("zoom", img, img, 0.05)
+    assert not same(zoomed, img)
 
 
 def test_last_holds_at_most_one_frame(tmp_path):
@@ -130,7 +145,7 @@ def test_top_level_default_and_scene_override(tmp_path):
     spec = validate({"transition": {"type": "zoom", "seconds": 0.5},
                      "scenes": [TITLE, BULLETS, {**STAT, "transition": "cut"}]})
     assert spec["transition"] == {"type": "zoom", "seconds": 0.5}
-    assert spec["scenes"][2]["transition"] == {"type": "cut", "seconds": 0.25}
+    assert spec["scenes"][2]["transition"] == {"type": "cut", "seconds": 0.5}  # seconds come from the default
     tl = Timeline(spec, "landscape", tmp_path, scale=0.25)
     assert [t["type"] for t in tl._transitions] == ["zoom", "zoom", "cut"]
 
@@ -301,8 +316,9 @@ def test_split_count_parts():
 def test_contact_fracs():
     assert contact_fracs(None) == (0.35, 0.92)
     assert len(contact_fracs(4)) == 4 and list(contact_fracs(6)) == sorted(contact_fracs(6))
-    assert all(0 < f < 1 for f in contact_fracs(12)) and contact_fracs(1) == (0.92,)
-    for bad in (0, 13, -1):
+    assert all(0 < f < 1 for f in contact_fracs(8)) and contact_fracs(1) == (0.92,)
+    assert contact_fracs(2) == contact_fracs(None) == (0.35, 0.92)
+    for bad in (0, 9, 13, -1):
         with pytest.raises(RenderError, match="contact frames"):
             contact_fracs(bad)
 
@@ -315,6 +331,10 @@ def test_contact_sheet_has_the_requested_tiles_per_scene(tmp_path):
     assert four.height == 3 * (tile_h + 24)  # one row of 4 tiles per scene
     default = Image.open(contact_sheet(tl, tmp_path / "default.png"))
     assert default.width == 4 * 480 and default.height == 2 * (tile_h + 24)  # 6 tiles, as before
+    two = Image.open(contact_sheet(tl, tmp_path / "two.png", fracs=contact_fracs(2)))
+    assert two.size == default.size and same(two, default)  # N=2 is the default sheet
+    eight = Image.open(contact_sheet(tl, tmp_path / "eight.png", fracs=contact_fracs(8)))
+    assert eight.width == 8 * 320 and eight.height == 3 * (int(320 * tl.ctx.H / tl.ctx.W) + 24)
 
 
 def test_contact_frames_flag_on_the_command_line(tmp_path, capsys):
@@ -328,6 +348,124 @@ def test_contact_frames_flag_on_the_command_line(tmp_path, capsys):
     sheet = Image.open(out / "square" / "contact.png")
     assert sheet.width == 4 * 480
     assert sheet.height == 2 * (480 + 24)  # two scenes, one row each
-    assert main(["render", str(spec), "--out", str(out), "--contact-frames", "13"]) == 1
-    assert "--contact-frames must be an integer between 1 and 12" in capsys.readouterr().err
-    assert render_mod.MAX_CONTACT_FRAMES == 12
+    assert main(["render", str(spec), "--out", str(out), "--contact-frames", "9"]) == 1
+    assert "--contact-frames must be an integer between 1 and 8" in capsys.readouterr().err
+    assert render_mod.MAX_CONTACT_FRAMES == 8
+
+
+# --- review fixes ---------------------------------------------------------------------------------------
+
+def test_a_scene_transition_that_sets_one_field_inherits_the_other():
+    top = {"transition": {"type": "slide", "seconds": 0.6}}
+    spec = validate({**top, "scenes": [TITLE, {**TITLE, "transition": {"seconds": 0.4}},
+                                       {**TITLE, "transition": {"type": "zoom"}}, {**TITLE, "transition": "cut"}]})
+    assert [s["transition"] for s in spec["scenes"][1:]] == [
+        {"type": "slide", "seconds": 0.4}, {"type": "zoom", "seconds": 0.6}, {"type": "cut", "seconds": 0.6}]
+    plain = validate({"scenes": [TITLE, {**TITLE, "transition": {"seconds": 0.4}}]})
+    assert plain["scenes"][1]["transition"] == {"type": "fade", "seconds": 0.4}
+
+
+def test_a_string_transition_in_config_and_spec_merges_with_a_mapping(tmp_path):
+    from yamlreel.config import Config
+    cfg = Config()
+    cfg.data["transition"] = "slide"
+    spec = validate({"transition": {"seconds": 0.4}, "scenes": [TITLE]}, cfg)
+    assert spec["transition"] == {"type": "slide", "seconds": 0.4}
+    assert validate({"scenes": [TITLE]}, cfg)["transition"] == {"type": "slide", "seconds": 0.25}
+    assert validate({"transition": "zoom", "scenes": [TITLE]}, cfg)["transition"] == {"type": "zoom", "seconds": 0.25}
+
+
+def test_a_null_top_level_transition_is_unset():
+    spec = validate({"transition": None, "scenes": [TITLE, TITLE]})
+    assert spec["transition"] == {"type": "fade", "seconds": 0.25}
+
+
+def test_a_transition_longer_than_the_scene_is_shortened_with_a_warning(tmp_path):
+    tl = timeline(tmp_path, TITLE, {**TITLE, "seconds": 0.2, "transition": {"seconds": 0.8}}, TITLE)
+    assert tl._transitions[1]["seconds"] == pytest.approx(0.2)
+    assert any("scenes[1]" in w and "shortened" in w for w in tl.warnings)
+    tl.frame_at(tl.starts[1] + 0.19)  # the whole scene is the transition, and it still renders
+    quiet = timeline(tmp_path, TITLE, {**TITLE, "seconds": 0.2, "transition": "cut"}, TITLE)
+    assert quiet.warnings == []  # a cut has no length; the first scene has no transition into it
+
+
+@pytest.mark.parametrize("text,suffix", [
+    ("5, 6 left", None), ("about 5, then", ", then"), ("12,345 rows", " rows"), ("1,234,567.5 x", " x"),
+    ("COVID-19 cases", " cases"), ("1000 and", " and"), ("v1,2", None),
+])
+def test_number_parsing_edges(text, suffix):
+    if suffix is None:
+        with pytest.raises(ValueError):
+            split_count(text)  # "5" and "6": two numbers
+        return
+    p = split_count(text)
+    assert p.suffix == suffix
+
+
+def test_number_parsing_details():
+    assert split_count("5, then").suffix == ", then" and split_count("5, then").target == 5
+    assert split_count("COVID-19 cases").prefix == "COVID-" and split_count("COVID-19 cases").target == 19
+    assert split_count("x -3 y").target == -3 and split_count("-3").target == -3 and split_count("+3").target == 3
+    assert split_count("$-3").target == -3
+    with pytest.raises(ValueError):
+        split_count("1,2,3")  # three numbers, not 123
+    with pytest.raises(ValueError):
+        split_count("10-20")  # a range, not 10 and minus 20
+    with pytest.raises(ValueError):
+        split_count("\u0663\u0664")  # Arabic-Indic digits are not numbers here
+    with pytest.raises(ValueError):
+        split_count("1,2")
+
+
+def test_signed_zero_keeps_its_plus():
+    p = split_count("+40 pts")
+    assert p.format(-0.2) == "+0 pts" and p.format(0.0) == "+0 pts" and p.format(12.0) == "+12 pts"
+    assert split_count("40 pts").format(-0.2) == "0 pts"
+
+
+def test_stagger_past_the_scene_end_warns(tmp_path):
+    tl = timeline(tmp_path, {**BULLETS, "seconds": 3, "stagger": 1.5})  # 0.5 + 2 * 1.5 + 0.5 = 4 > 3
+    assert any("stagger" in w for w in tl.warnings)
+    ok = timeline(tmp_path, {**BULLETS, "seconds": 5, "stagger": 1.0})  # 0.5 + 2 + 0.5 = 3 <= 5
+    assert not any("stagger" in w for w in ok.warnings)
+    assert not any("stagger" in w for w in timeline(tmp_path, BULLETS).warnings)
+
+
+def test_a_count_that_starts_wider_than_its_final_text_warns(tmp_path):
+    tl = timeline(tmp_path, {**STAT, "value": "7 rows", "count": {"from": -123456789, "seconds": 2}})
+    assert any("starts wider" in w for w in tl.warnings)
+    assert not any("starts wider" in w for w in timeline(tmp_path, STAT).warnings)
+
+
+# Frames of a spec that uses none of the new keys, pinned to what 0.2.2 renders (checked against the 0.2.2 tag).
+# Hashes depend on the FreeType/Pillow rasteriser and the DejaVu fonts; if a library upgrade changes them, check
+# the frames by eye (contact sheet) and print new values with frame_hashes().
+NO_NEW_KEYS_SCENES = [
+    {"type": "title", "title": "First", "subtitle": "sub", "seconds": 2},
+    {"type": "bullets", "title": "Steps", "items": ["one", "two", "three"], "seconds": 4},
+    {"type": "stat", "value": "10,000,000 rows", "label": "scanned", "seconds": 3},
+    {"type": "code", "code": "def f(x):\n    return x + 1", "seconds": 3, "caption": "a caption"},
+    {"type": "diagram", "nodes": [{"id": "a", "label": "A", "x": 0.2, "y": 0.5},
+                                  {"id": "b", "label": "B", "x": 0.8, "y": 0.5, "at": 0.5}],
+     "edges": [{"from": "a", "to": "b"}], "seconds": 3},
+]
+NO_NEW_KEYS_TIMES = (0.0, 0.7, 1.0, 2.1, 2.2, 3.0, 5.5, 6.1, 6.2, 8.0, 9.1, 10.0, 12.2, 14.0)
+NO_NEW_KEYS_HASHES = {
+    "landscape": ["769c116355a2bc1c", "b9c6158d60cff6ab", "0e936fde493711cb", "aa6a31ca7ca0fca9", "20c148f31d511276",
+                  "7acc6fba867841b7", "28eb616de741ea0c", "70e641ab117f7f31", "9fbc3e0ef6d91f72", "6015fba2a433f4bc",
+                  "8eb007ec74dd7cf7", "be3a9cc039690908", "08797bf700cfa713", "bd71e6b67b28d8ff"],
+    "vertical": ["c4dedcb60db2fa83", "9e706b9069a351c9", "a9934b772ac350bc", "e14d01d3ecd1becd", "dc296a5b24c3e8bb",
+                 "111633cae092ebe8", "6e1701a0b6eece7c", "c87ebfdfdd4112b2", "7adf69f02db3a392", "d68f34a51e3ff5ee",
+                 "15a7d9c9dca8c61c", "619b44bc64950795", "121d3e8438b5a26e", "ba115ac39ddd5443"],
+}
+
+
+def frame_hashes(tmp_path, fmt: str) -> list[str]:
+    import hashlib
+    tl = timeline(tmp_path, *NO_NEW_KEYS_SCENES, fmt=fmt)
+    return [hashlib.sha256(tl.frame_at(t).convert("RGB").tobytes()).hexdigest()[:16] for t in NO_NEW_KEYS_TIMES]
+
+
+@pytest.mark.parametrize("fmt", ["landscape", "vertical"])
+def test_a_spec_without_new_keys_renders_the_same_frames_as_0_2_2(tmp_path, fmt):
+    assert frame_hashes(tmp_path, fmt) == NO_NEW_KEYS_HASHES[fmt]
