@@ -352,6 +352,17 @@ A few settings widen what a spec can touch, so yamlreel only reads them from you
 line, never from a spec or project config you downloaded: `allow_paths`, `allow_private_hosts`,
 `chromium_path`, `font_dir` and `voice_server`. See [SECURITY.md](https://github.com/nsijwali/yamlreel/blob/main/SECURITY.md).
 
+## Upgrading to 0.3.0
+
+- **The pre-rename `vidgen` names are gone.** They are ignored now (no error, no warning). Use the `yamlreel` command
+  instead of `vidgen`; `YAMLREEL_CONFIG`, `YAMLREEL_FONT_DIR` and `YAMLREEL_CHROMIUM` instead of the `VIDGEN_*` variables;
+  `~/.config/yamlreel/config.yaml` instead of `~/.config/vidgen/config.yaml` (move the folder); and
+  `yamlreel.config.yaml` instead of `vidgen.config.yaml`. Reinstall with `pip install -e '.[ffmpeg]'` to drop the old command.
+- **`yamlreel config show` no longer lists music `bpm`, `root` and `scale`** unless you set them; each music style
+  supplies its own defaults (see [Music styles](#writing-a-spec)).
+- **New:** data scenes such as `table` and `array` ([Writing a spec](#writing-a-spec)), [word-by-word subtitles](#word-by-word-subtitles),
+  the `yamlreel story` command ([Story outlines](#story-outlines)) and the `ambient`, `lofi`, `pulse` and `piano` music styles.
+
 ## Troubleshooting
 
 | You see | Fix |

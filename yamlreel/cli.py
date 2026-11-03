@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from . import __version__, legacy
+from . import __version__
 from . import music as music_mod
 from . import story as story_mod
 from . import subtitles as subs_mod
@@ -147,11 +147,6 @@ def cmd_story(args: argparse.Namespace) -> int:
 def cmd_config(args: argparse.Namespace) -> int:
     if args.action == "init":
         dest = user_config_path() if args.user else Path(CONFIG_FILENAME)
-        if args.user and not args.force:
-            conflict = legacy.user_config_conflict(Path(config_base()), dest)
-            if conflict:
-                print(conflict, file=sys.stderr)
-                return 2
         return _copy_template("config.example", dest, args.force)
     cfg = _config(args)
     shown = dict(cfg.data)

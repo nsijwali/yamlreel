@@ -6,7 +6,7 @@ import yaml
 from PIL import Image, ImageChops
 
 from yamlreel import badge as badge_mod
-from yamlreel import legacy, story
+from yamlreel import story
 from yamlreel.cli import main
 from yamlreel.config import Config
 from yamlreel.datascenes import CtaScene
@@ -18,13 +18,12 @@ from yamlreel.voice import screen_text
 
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
-    for prefix in ("YAMLREEL", legacy.LEGACY.upper()):
+    for prefix in ("YAMLREEL",):
         for name in ("CONFIG", "FONT_DIR", "CHROMIUM"):
             monkeypatch.delenv(f"{prefix}_{name}", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("YAMLREEL_CONFIG", str(tmp_path / "no-config.yaml"))
     monkeypatch.chdir(tmp_path)
-    legacy._warned.clear()
 
 
 def same(a, b):
