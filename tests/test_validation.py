@@ -211,6 +211,7 @@ BASE_SCENES = {
                 "flash": [{"node": "a", "at": 1}]},
     "table": {"type": "table", "columns": ["id", "name"], "rows": [["1", "Ada"], ["2", "Lin"]]},
     "array": {"type": "array", "items": ["a", "b"]},
+    "cta": {"type": "cta", "question": "Which one?", "answers": ["x", "y"]},
 }
 
 

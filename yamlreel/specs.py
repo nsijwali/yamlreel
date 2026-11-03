@@ -17,8 +17,9 @@ from . import shots
 from .config import (DEFAULTS, HARD_LIMITS, SHARED_KEYS, Config, _absolutize, clamp_limits, describe_key,
                      describe_value, merge, normalize_music)
 from .config import yaml_problem as _yaml_problem
-from .datascenes import (ARRAY_ACTIONS, MAX_CELL_CHARS, MAX_CELLS, MAX_STEPS, MAX_TABLE_COLS, MAX_TABLE_ROWS,
-                         POP_SIDES, ArrayScene, ArrayStepError, TableScene, array_states)
+from .datascenes import (ARRAY_ACTIONS, DEFAULT_CTA_PROMPT, MAX_ANSWER_CHARS, MAX_ANSWERS, MAX_CELL_CHARS, MAX_CELLS,
+                         MAX_PROMPT_CHARS, MAX_QUESTION_CHARS, MAX_STEPS, MAX_TABLE_COLS, MAX_TABLE_ROWS, POP_SIDES,
+                         ArrayScene, ArrayStepError, TableScene, array_states)
 from .music import NOTE_OFFSETS, SCALES
 from .subtitles import (DEFAULT_SUBTITLES, MAX_KEYWORD_CHARS, MAX_KEYWORDS, POSITIONS, STYLES)
 from .scenes import SCENE_TYPES, DiagramScene, Scene
@@ -28,7 +29,7 @@ from .theme import get_theme
 FORMATS = {"landscape": (1920, 1080), "vertical": (1080, 1920), "square": (1080, 1080)}
 
 DEFAULT_SECONDS = {"title": 3.0, "type": 3.0, "shot": 4.0, "diagram": 7.0,
-                   "bullets": 5.0, "code": 6.0, "stat": 3.5, "table": 8.0, "array": 8.0}
+                   "bullets": 5.0, "code": 6.0, "stat": 3.5, "table": 8.0, "array": 8.0, "cta": 6.0}
 REQUIRED = {
     "title": ["title"],
     "type": ["text"],
@@ -39,6 +40,7 @@ REQUIRED = {
     "stat": ["value"],
     "table": ["columns", "rows"],
     "array": ["items"],
+    "cta": ["question"],
 }
 MUSIC_STYLES = {"koto", "none"}
 TRANSITIONS = ("fade", "slide", "zoom", "cut")
@@ -65,6 +67,7 @@ MAX_META_ENTRIES = 50    # tags, links or credits
 MAX_THEMES = 100         # custom themes in one spec or config
 MAX_THEME_NAME = 60
 MAX_FORMATS = 3
+MAX_STEP_LABEL = 60      # characters in a scene's `step` label
 NODE_SIZE = (16, 120)
 # Output frames over all formats: one hour at 60 fps, or two formats at 30 fps.
 MAX_FRAMES = 216_000
@@ -240,6 +243,37 @@ def _narration_words(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
     if not isinstance(v, str) or not v.strip():
         raise SpecError(f"{path} must be a path to a .json file of {{word, start, end}} entries")
     return _text(path, v)
+
+
+def _step_label(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
+    label = " ".join(_text(path, v, MAX_STEP_LABEL, "MAX_STEP_LABEL").split())
+    if not label:
+        raise SpecError(f"{path} must not be empty")
+    return label
+
+
+def _question(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
+    q = " ".join(_text(path, v, MAX_QUESTION_CHARS, "MAX_QUESTION_CHARS").split())
+    if not q:
+        raise SpecError(f"{path} must not be empty")
+    return q
+
+
+def _answers(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[str]:
+    out = []
+    for n, a in enumerate(_list(path, v, 0, MAX_ANSWERS, "MAX_ANSWERS")):
+        text = " ".join(_text(f"{path}[{n}]", a, MAX_ANSWER_CHARS, "MAX_ANSWER_CHARS").split())
+        if not text:
+            raise SpecError(f"{path}[{n}] must not be empty")
+        out.append(text)
+    return out
+
+
+def _prompt(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
+    text = " ".join(_text(path, v, MAX_PROMPT_CHARS, "MAX_PROMPT_CHARS").split())
+    if not text:
+        raise SpecError(f"{path} must not be empty")
+    return text
 
 
 def _keywords(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[str]:
@@ -600,6 +634,10 @@ FIELD_CHECKS: dict[str, Checker] = {
     "narration_words": _narration_words,
     "subtitles": _bool_field,
     "keywords": _keywords,
+    "step": _step_label,
+    "question": _question,
+    "answers": _answers,
+    "prompt": _prompt,
     "transition": _transition,
     "stagger": _stagger,
     "count": _count,
@@ -665,6 +703,9 @@ def _scene(i: int, raw: Any, env: _Env) -> dict[str, Any]:
         if k != "type":
             check = TYPE_CHECKS.get(t, {}).get(k) or FIELD_CHECKS[k]
             sc[k] = check(f"{path}.{k}", sc[k], sc, env)
+    if t == "cta":
+        sc.setdefault("answers", [])
+        sc.setdefault("prompt", DEFAULT_CTA_PROMPT)
     if t == "shot":
         sc.setdefault("zoom", [1.0, 1.0])
         sc.setdefault("click", [])

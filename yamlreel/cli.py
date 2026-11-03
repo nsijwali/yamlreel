@@ -1,4 +1,4 @@
-"""Command line interface: yamlreel render|validate|init|config|music."""
+"""Command line interface: yamlreel render|validate|init|story|config|music."""
 from __future__ import annotations
 
 import argparse
@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml
 
 from . import __version__, legacy
+from . import story as story_mod
 from . import subtitles as subs_mod
 from . import voice as voice_mod
 from .config import CONFIG_FILENAME, config_base, Config, ConfigError, load_config, user_config_path
@@ -127,6 +128,21 @@ def cmd_init(args: argparse.Namespace) -> int:
     return _copy_template(args.template, Path(args.dest), args.force)
 
 
+def cmd_story(args: argparse.Namespace) -> int:
+    src = Path(args.outline)
+    dest = Path(args.out) if args.out else src.with_name(f"{src.stem}.spec.yaml")
+    if dest.exists() and not args.force:
+        print(f"{dest} exists; pass --force to overwrite", file=sys.stderr)
+        return 2
+    outline = story_mod.load_outline(src)
+    text = story_mod.generate(outline, src.name, theme=args.theme, fmt=args.format)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(text, encoding="utf-8")
+    print(f"wrote {dest} ({len(outline['steps'])} steps); fill in the TODO placeholders, then: "
+          f"yamlreel render {dest} --preview --no-voice")
+    return 0
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     if args.action == "init":
         dest = user_config_path() if args.user else Path(CONFIG_FILENAME)
@@ -186,6 +202,13 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("dest")
     i.add_argument("--force", action="store_true")
     i.set_defaults(fn=cmd_init)
+    st = sub.add_parser("story", help="turn an outline (hook, problem, steps, question) into a starter spec")
+    st.add_argument("outline", help="the outline YAML")
+    st.add_argument("--out", help="where to write the spec (default: <outline>.spec.yaml next to the outline)")
+    st.add_argument("--theme", help="theme name to put in the spec")
+    st.add_argument("--format", choices=list(FORMATS), help="the one format to put in the spec")
+    st.add_argument("--force", action="store_true", help="overwrite an existing file")
+    st.set_defaults(fn=cmd_story)
     c = sub.add_parser("config", parents=[common], help="show the effective config, or write a starter config file")
     c.add_argument("action", choices=["show", "init"])
     c.add_argument("--user", action="store_true", help="with init: write the user config (~/.config/yamlreel/config.yaml)")

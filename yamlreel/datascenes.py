@@ -1,12 +1,14 @@
-"""Data scenes: a table whose rows appear one by one with a scan bar, and an array of cells that moves.
+"""Data scenes: a table whose rows appear one by one with a scan bar, an array of cells that moves, and the `cta`
+end card (a question bubble with lettered answers).
 
-Both animate the data itself instead of boxes around text. The step logic of the array is a pure function
+The table and the array animate the data itself instead of boxes around text. The step logic of the array is a pure function
 (`array_states`), so a spec is replayed when it is loaded and a bad step is reported with its path and time.
 All text is rendered to blocks once in `__init__`; `frame(t)` only composites.
 """
 from __future__ import annotations
 
 import bisect
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -34,6 +36,12 @@ MOVE_SECONDS = 0.4        # how long cells take to move into their new places
 GHOST_SECONDS = MOVE_SECONDS / 1.3   # a cell that left has faded out by then
 ARRAY_ACTIONS = ("insert", "push", "pop", "mark", "unmark", "window")
 POP_SIDES = ("front", "back")
+MAX_ANSWERS = 4           # A to D
+MAX_QUESTION_CHARS = 200
+MAX_ANSWER_CHARS = 60
+MAX_PROMPT_CHARS = 80
+DEFAULT_CTA_PROMPT = "Answer in the comments"
+CTA_LETTERS = "ABCD"
 
 
 # --- array: pure step logic -----------------------------------------------------------------------------
@@ -674,3 +682,157 @@ class ArrayScene(Scene):
 
     def _window_extent(self, lo: int, hi: int, n: float) -> tuple[float, float]:
         return (self.slot_x(lo, n) - self.cell_w / 2 - 6 * self.ctx.u, self.slot_x(hi, n) + self.cell_w / 2 + 6 * self.ctx.u)
+
+
+
+# --- cta end card ---------------------------------------------------------------------------------------
+
+class CtaScene(Scene):
+    """An end card that asks a question: a speech bubble that pops in, lettered answer chips that follow one
+    by one, and a prompt that pulses once a second."""
+
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"question", "answers", "prompt"})
+    BUBBLE_AT = 0.1          # the bubble starts to pop here
+    POP_SECONDS = 0.5
+    CHIP_AT = 0.9            # the first answer comes in here, the others CHIP_STAGGER apart
+    CHIP_STAGGER = 0.35
+    CHIP_SECONDS = 0.4
+    PULSE_SECONDS = 1.0
+
+    def __init__(self, spec: dict[str, Any], ctx: Ctx):
+        super().__init__(spec, ctx)
+        u, th, W, H = ctx.u, ctx.theme, ctx.W, ctx.H
+        margin = fill_margin(ctx)
+        avail = W - 2 * margin
+        self.answers: list[str] = list(spec.get("answers") or [])
+        n = len(self.answers)
+        # the bubble: a card with the question and a small tail pointing down at the answers
+        pad = int(44 * u)
+        qblk = ctx.block(str(spec["question"]), ctx.display, 64 * u * ctx.fs, avail - 2 * pad,
+                         max_h=H * (0.2 if ctx.vertical else 0.24), align="center", spacing=1.2)
+        tail = int(26 * u)
+        bw, bh = int(avail), qblk.height + 2 * pad
+        self.bubble = Image.new("RGBA", (bw, bh + tail), (0, 0, 0, 0))
+        bd = ImageDraw.Draw(self.bubble)
+        line_w = max(2, int(4 * u))
+        bd.rounded_rectangle([0, 0, bw - 1, bh - 1], int(30 * u), fill=th.card, outline=th.accent, width=line_w)
+        tx = int(bw * 0.12)
+        bd.polygon([(tx, bh - 2), (tx + int(46 * u), bh - 2), (tx + int(6 * u), bh + tail - 1)], fill=th.card,
+                   outline=th.accent)
+        bd.line([(tx + line_w, bh - 2), (tx + int(46 * u) - line_w, bh - 2)], fill=th.card, width=line_w + 2)
+        self.bubble.paste(th.fg, ((bw - qblk.width) // 2, pad), qblk.mask)
+        # answer chips: one column in vertical, two columns in landscape (side by side for two answers)
+        cols = 1 if (ctx.vertical or n <= 1) else 2
+        gap = int(18 * u)
+        chip_w = int((avail - (cols - 1) * gap) / cols)
+        text_size = (44 if ctx.vertical else 40) * u * ctx.fs
+        chip_h = int(text_size * 2.1)
+        self.chip_size = (chip_w, chip_h)
+        self.chips: list[Image.Image] = []
+        for i, answer in enumerate(self.answers):
+            self.chips.append(self._make_chip(CTA_LETTERS[i], answer, chip_w, chip_h, text_size))
+        rows = (n + cols - 1) // cols
+        grid_h = rows * chip_h + max(0, rows - 1) * gap
+        # the prompt
+        pblk = ctx.block(str(spec.get("prompt") or DEFAULT_CTA_PROMPT), "sans_bold", 40 * u * ctx.fs, avail - 90 * u,
+                         max_h=120 * u, align="center")
+        self.prompt_blk = pblk
+        ppx, ppy = int(40 * u), int(18 * u)
+        self.prompt_size = (pblk.width + 2 * ppx, pblk.height + 2 * ppy)
+        # vertical stack, centred in the area above the caption zone
+        gap1, gap2 = 34 * u, 44 * u
+        total = self.bubble.height + (gap1 + grid_h if n else 0.0) + gap2 + self.prompt_size[1]
+        top = max(H * 0.07, centre_y(ctx) - total / 2)
+        if top + total > H * (0.74 if ctx.vertical else 0.86):
+            ctx.warn("cta card is tall; use fewer or shorter answers")
+        self.bubble_xy = (margin, top)
+        y = top + self.bubble.height + gap1
+        self.chip_xy: list[tuple[float, float]] = []
+        for i in range(n):
+            r, c = divmod(i, cols)
+            self.chip_xy.append((margin + c * (chip_w + gap), y + r * (chip_h + gap)))
+        y += grid_h + (gap2 if n else gap2 - gap1)
+        self.prompt_xy = ((W - self.prompt_size[0]) / 2, y)
+        self.prompt_at = self.CHIP_AT + n * self.CHIP_STAGGER + 0.1
+        self.prompt_pad = (ppx, ppy)
+        if self.prompt_at + 0.5 > self.duration:
+            ctx.warn(f"the cta card needs {self.prompt_at + 0.5:.1f}s to finish; the scene is {self.duration:.1f}s")
+
+    def _make_chip(self, letter: str, answer: str, w: int, h: int, size: float) -> Image.Image:
+        c, th, u = self.ctx, self.ctx.theme, self.ctx.u
+        chip = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(chip)
+        d.rounded_rectangle([0, 0, w - 1, h - 1], int(h * 0.3), fill=th.card, outline=th.line, width=max(2, int(3 * u)))
+        diam = int(h * 0.62)
+        cx0, cy0 = int(h * 0.19), (h - diam) // 2
+        d.ellipse([cx0, cy0, cx0 + diam, cy0 + diam], fill=th.accent)
+        lb = make_block(letter, "sans_bold", diam * 0.58, diam, min_size=10, align="center")
+        chip.paste(th.bg, (cx0 + (diam - lb.width) // 2, cy0 + (diam - lb.mask.height) // 2 + int(diam * 0.04)), lb.mask)
+        tx = cx0 + diam + int(h * 0.26)
+        blk = c.block(answer, "sans_bold", size, w - tx - h * 0.3, max_h=h * 0.84, align="left", spacing=1.15)
+        chip.paste(th.fg, (tx, (h - blk.height) // 2), blk.mask)
+        return chip
+
+    # --- timing and geometry (also used by tests) -------------------------------------------------------
+
+    def pop_scale(self, t: float) -> float:
+        """Size of the bubble at scene time t: it grows from 0.7 with an overshoot and settles at 1.0."""
+        return 0.7 + 0.3 * ease("back", (t - self.BUBBLE_AT) / self.POP_SECONDS)
+
+    def chip_alpha(self, i: int, t: float) -> float:
+        return _appear(t, self.CHIP_AT + i * self.CHIP_STAGGER, self.CHIP_SECONDS)
+
+    def pulse(self, t: float) -> float:
+        """0..1 once a second, starting when the prompt appears (0 at the start of each beat, 1 half a beat later)."""
+        if t < self.prompt_at:
+            return 0.0
+        return 0.5 - 0.5 * math.cos(2 * math.pi * (t - self.prompt_at) / self.PULSE_SECONDS)
+
+    def bubble_box(self) -> tuple[float, float, float, float]:
+        x, y = self.bubble_xy
+        return x, y, x + self.bubble.width, y + self.bubble.height
+
+    def chip_box(self, i: int) -> tuple[float, float, float, float]:
+        x, y = self.chip_xy[i]
+        return x, y, x + self.chip_size[0], y + self.chip_size[1]
+
+    def prompt_box(self) -> tuple[float, float, float, float]:
+        x, y = self.prompt_xy
+        return x, y, x + self.prompt_size[0], y + self.prompt_size[1]
+
+    @staticmethod
+    def _put(img: Image.Image, layer: Image.Image, xy: tuple[float, float], alpha: float) -> None:
+        if alpha <= 0:
+            return
+        mask = layer.getchannel("A")
+        if alpha < 1:
+            mask = mask.point(lambda v: int(v * alpha))
+        img.paste(layer.convert("RGB"), (int(round(xy[0])), int(round(xy[1]))), mask)
+
+    def frame(self, t: float) -> Image.Image:
+        c, th, u = self.ctx, self.ctx.theme, self.ctx.u
+        img = c.background()
+        a = ease_out((t - self.BUBBLE_AT) / 0.25)
+        k = self.pop_scale(t)
+        if (t - self.BUBBLE_AT) / self.POP_SECONDS >= 1.0:
+            self._put(img, self.bubble, self.bubble_xy, a)
+        elif a > 0:
+            bw, bh = self.bubble.size
+            w, h = max(1, int(bw * k)), max(1, int(bh * k))
+            pop = self.bubble.resize((w, h), Image.BILINEAR)
+            self._put(img, pop, (self.bubble_xy[0] + (bw - w) / 2, self.bubble_xy[1] + (bh - h) / 2), a)
+        for i, chip in enumerate(self.chips):
+            ca = self.chip_alpha(i, t)
+            x, y = self.chip_xy[i]
+            self._put(img, chip, (x, y + (1 - ca) * 24 * u), ca)
+        pa = _appear(t, self.prompt_at, 0.4)
+        if pa > 0:
+            p = self.pulse(t)
+            x0, y0, x1, y1 = self.prompt_box()
+            d = ImageDraw.Draw(img)
+            outline = lerp_color(th.card, lerp_color(th.line, th.accent, p), pa)
+            d.rounded_rectangle([x0, y0, x1, y1], int((y1 - y0) / 2), fill=lerp_color(th.bg, th.card, pa),
+                                outline=outline, width=max(2, int((3 + 3 * p) * u)))
+            blit(img, self.prompt_blk, ((x0 + x1) / 2, y0 + self.prompt_pad[1]), lerp_color(th.accent, th.fg, 0.4 * (1 - p)),
+                 pa, "tc")
+        return img

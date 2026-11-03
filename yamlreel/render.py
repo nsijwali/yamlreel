@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw
 from . import music as music_mod
 from . import subtitles as subs_mod
 from . import voice as voice_mod
+from .badge import Badge, make_badge, step_plan
 from .config import HARD_LIMITS
 from .safety import UnsafeInput, resolve_local
 from .scenes import Ctx, Scene, build_scene, make_caption
@@ -132,6 +133,17 @@ class Timeline:
         self._current = -1  # the scene frame_at last drew; scenes far from it give their cached layers back
         self._last: dict[int, Image.Image] = {}  # at most one entry: the last frame of the scene before this one
         self._wm = self._make_watermark(spec.get("watermark"))
+        self._badges: dict[int, Badge] = {}  # scene index -> its STEP n/N badge (one image per distinct step)
+        made: dict[tuple[int, int, str], Badge] = {}
+        for i, plan in enumerate(step_plan([s.get("step") for s in scenes_spec])):
+            if plan is not None:
+                self._badges[i] = made.setdefault(plan, make_badge(self.ctx, *plan))
+        if self._badges and self._wm:
+            rgb, _, (wx, wy) = self._wm
+            bx0, by0, bx1, by1 = next(iter(self._badges.values())).box
+            if wx < bx1 and wx + rgb.width > bx0 and wy < by1 and wy + rgb.height > by0:
+                self.ctx.warn("the watermark overlaps the step badge at the top; move it with watermark.position "
+                              "or make it smaller")
 
     def _make_watermark(self, wm: dict[str, Any] | None) -> tuple[Image.Image, Image.Image, tuple[int, int]] | None:
         """Pre-render the watermark once: (rgb, mask, top-left position)."""
@@ -200,6 +212,9 @@ class Timeline:
         track = self._subs.get(i)
         if track is not None:
             track.draw(img, lt)
+        badge = self._badges.get(i)
+        if badge is not None:
+            badge.paste(img)
         return img
 
     def subtitle_cues(self) -> list[subs_mod.Cue]:
@@ -325,6 +340,10 @@ def share_copy(spec: dict[str, Any], total: float, fmt_list: list[str]) -> tuple
     if "vertical" in fmt_list and total <= 60 and "Shorts" not in tags:
         tags = ["Shorts", *tags]
     lines = [str(meta.get("description", "")).strip()]
+    question = next((str(sc["question"]).strip() for sc in spec.get("scenes", []) if sc.get("type") == "cta"
+                     and str(sc.get("question", "")).strip()), "")
+    if question and question not in lines[0]:
+        lines.append(question)  # the end card's question, so the description invites the same comment
     for link in meta.get("links", []):
         lines.append(str(link))
     for credit in meta.get("credits", []):

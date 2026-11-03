@@ -95,7 +95,7 @@ class Scene:
     # with what the constructors actually read.
     COMMON_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"type", "seconds", "caption", "narration", "narration_audio", "transition", "narration_words", "subtitles",
-         "keywords"})
+         "keywords", "step"})
     FIELDS: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(self, spec: dict[str, Any], ctx: Ctx):

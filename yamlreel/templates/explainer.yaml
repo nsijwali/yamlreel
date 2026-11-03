@@ -1,0 +1,44 @@
+# The explainer arc by hand: hook, problem, one scene per step (STEP n/N badge), when to use, end card.
+# `yamlreel story outline.yaml` writes this shape from a short outline.
+meta:
+  title: Rate limiting in under a minute
+  tags: [systemdesign, apis]
+theme: midnight
+formats: [vertical, landscape]
+subtitles: {keywords: [token bucket, sliding window]}
+scenes:
+  - type: type
+    text: One noisy client can take your API down.
+    narration: One noisy client can take your API down.
+    transition: cut
+    seconds: 4
+  - type: title
+    eyebrow: THE PROBLEM
+    title: One burst starves every other client.
+    narration: One burst starves every other client.
+    seconds: 4
+  - type: bullets
+    title: Token bucket
+    step: Token bucket
+    items: [Each request spends a token, Tokens refill at a steady rate, An empty bucket rejects requests]
+    narration: Each request spends a token. Tokens refill at a steady rate. An empty bucket rejects the request.
+    seconds: 8
+  - type: array
+    title: Sliding window
+    step: Sliding window
+    items: [req1, req2, req3]
+    steps:
+      - {at: 1.0, push: req4}
+      - {at: 2.0, pop: front}
+      - {at: 3.0, window: [0, 2], text: "last 60 s"}
+    narration: Count the requests in the last sixty seconds, and reject anything over the limit.
+    seconds: 8
+  - type: bullets
+    title: When to use
+    items: ["Bursty traffic: token bucket", "Exact limits: sliding window"]
+    seconds: 5
+  - type: cta
+    question: Which limiter does your API use?
+    answers: [Token bucket, Sliding window]
+    prompt: Comment A or B
+    seconds: 6

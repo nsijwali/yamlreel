@@ -1,0 +1,18 @@
+# An outline for `yamlreel story`: the arc of an explainer in a few lines.
+#   yamlreel story examples/outlines/load-balancing.yaml --out examples/load-balancing-story.yaml --force
+# The command writes an ordinary spec; fill in its TODO placeholders and render it.
+topic: Load balancing
+hook: One busy server should not slow down every user.
+problem: Requests pile up on a single machine while the others sit idle.
+steps:
+  - name: Round robin
+    say: Hand each new request to the next server in the list, one after another.
+    show: array
+  - name: Least connections
+    say: Send each request to the server that has the fewest open connections right now.
+    show: table
+when_to_use:
+  - "Similar requests: round robin"
+  - "Uneven or long requests: least connections"
+question: Which strategy does your service use?
+answers: [Round robin, Least connections, Something else]

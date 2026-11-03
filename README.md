@@ -142,6 +142,30 @@ scenes:
 - `--no-voice` drops the narration, so there is nothing to caption; render with the voice (or `narration_audio`) to see
   subtitles, and use `--preview --contact-frames 6` to check them.
 
+## Story outlines
+
+`yamlreel story outline.yaml` writes a plain spec with the arc that holds attention: hook, problem, one scene per
+step, when to use, and a question end card. It works offline and the same outline always gives the same spec; the
+spec has no special `story:` key, so edit any scene afterwards.
+
+```yaml
+topic: Load balancing                      # required: the video title
+hook: One busy server should not slow down every user.   # required: typed on screen and spoken
+problem: Requests pile up on one machine.  # optional
+steps:                                     # 1 to 6, required; each name becomes a badge label
+  - {name: Round robin, say: "Hand each request to the next server.", show: array}
+  - {name: Least connections, say: "Pick the server with the fewest open connections.", show: table}
+when_to_use: ["Similar requests: round robin", "Uneven requests: least connections"]   # optional, up to 6
+question: Which strategy does your service use?   # optional: the end card; without it the video ends on a title card
+answers: [Round robin, Least connections]         # optional, up to 4
+```
+
+`show` is the scene type for a step (`bullets` by default; `title`, `type`, `code`, `stat`, `diagram`, `table` or
+`array`). The scene gets placeholder content marked `TODO` (for example a 3 by 3 table), which the header comment of the
+file lists; replace them, then render with `--preview --no-voice`. Unknown keys, no steps and more than six steps are
+errors. Each scene is at least `words / 2.5 + 1` seconds (narration stretches it if needed). The command refuses to
+overwrite a file unless you pass `--force`; `--theme` and `--format` set them in the spec.
+
 ## Examples
 
 | Spec | What it is |
@@ -149,17 +173,19 @@ scenes:
 | [`examples/cache-stampede-45s.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/cache-stampede-45s.yaml) | A 45-second system-design explainer with a diagram, code and a narrated script. |
 | [`examples/motion-demo.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/motion-demo.yaml) | Scene transitions, staggered bullets and counting-up numbers. |
 | [`examples/index-scan.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/index-scan.yaml) | A table that is scanned row by row, a sorted index taking inserts, and a queue. |
+| [`examples/load-balancing-story.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/load-balancing-story.yaml) | The output of `yamlreel story` for [`examples/outlines/load-balancing.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/outlines/load-balancing.yaml): hook, problem, two steps with badges, when to use, and a question end card. |
 | [`examples/subtitles-demo.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/subtitles-demo.yaml) | Narrated scenes with karaoke subtitles, highlighted keywords and numbers, and an SRT file. |
 
 It is narrated; add `--no-voice` to render it with music only. For more starting points, run
-`yamlreel init` with the `system-design`, `project` or `code-tip` template.
+`yamlreel init` with the `explainer`, `system-design`, `project` or `code-tip` template.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `yamlreel --version` | Prints the installed version and exits. |
-| `yamlreel init <template> <file>` | Writes a starter spec: `system-design`, `project` or `code-tip`. |
+| `yamlreel init <template> <file>` | Writes a starter spec: `explainer`, `system-design`, `project` or `code-tip`. |
+| `yamlreel story <outline> [--out FILE] [--theme T] [--format F] [--force]` | Turns an outline into a starter spec; see [Story outlines](#story-outlines). |
 | `yamlreel validate <spec>` | Checks a spec and prints its scene count, length and how many scenes are narrated and subtitled, without rendering. |
 | `yamlreel render <spec>` | Renders. Useful flags: `--preview`, `--out DIR`, `--format vertical\|landscape\|square\|all`, `--music koto\|none\|file.mp3`, `--fps N`, `--contact-frames N`, `--no-voice`, `--voice-url URL`, `--read-screen`, `--allow-path DIR`, `--allow-private-hosts`. |
 | `yamlreel config init [--user]` / `config show` | Writes a starter config, or shows the merged settings and the files they came from. |
@@ -195,6 +221,7 @@ scenes:
 | `stat` | one big number or phrase, optionally counting up | `value`, `label`, `eyebrow`, `count` |
 | `table` | rows that appear one by one, a scan bar walking down them, highlighted rows and a ticking counter | `title`, `columns`, `rows`, `stagger`, `reveal`, `scan`, `highlight`, `counter` |
 | `array` | one row of cells that take sorted inserts, pushes and pops, marks and a sliding window | `title`, `items`, `steps`, `stagger` |
+| `cta` | an end card: a question bubble, lettered answer chips (A to D) and a pulsing prompt | `question`, `answers`, `prompt` |
 | `diagram` | boxes and arrows that appear in order, packets flowing, nodes flashing | `nodes`, `edges`, `flash`, `title` |
 | `shot` | a screenshot of a URL or an image, with a slow camera move | `source`, `zoom`, `focus`, `fit`, `click`, `scroll_y` |
 
@@ -213,7 +240,7 @@ watermark: "Your Name"        # or {text|image: logo.png, position: top-left|top
 poster: {scene: 0, at: 2.6}   # optional; default is the first scene, just before it ends
 voiceover: {voice, language, gap, music_level, read_screen}
 subtitles: {style: karaoke | pop | plain, words: 4, position: lower | middle, size: 1.0, uppercase: false, keywords: [], numbers: true, srt: false}   # or `true`; default off
-scenes: [...]                 # every scene also takes: transition, subtitles (false opts out), keywords (extra subtitle keywords), narration_words (JSON of exact word times)
+scenes: [...]                 # every scene also takes: step (badge label), transition, subtitles (false opts out), keywords (extra subtitle keywords), narration_words (JSON of exact word times)
 ```
 
 - **Diagrams:** `nodes` take `id, label, kind (client|service|cache|db), x, y, at`, where `x` and `y` are fractions of the frame. `vx, vy` override them in vertical frames, so one diagram fits both shapes. `edges` take `from, to, label, bad, dashed, at, color` and `flash` takes `node, at, text, color`.
@@ -223,6 +250,8 @@ scenes: [...]                 # every scene also takes: transition, subtitles (f
 - **Count-up:** `count: true` on a `stat` scene counts the one number in `value` up from 0 over 60% of the scene; `count: {from: 0, seconds: 2.5}` sets both. Prefix, suffix, thousands separators and decimals are kept, and the scene ends on exactly the `value` text. `value` must hold exactly one number.
 - **Table:** `columns` (1 to 6) and `rows` (1 to 12, each with one cell per column, cells up to 40 characters; quote a number to keep its formatting). Rows appear `stagger` seconds apart (default 0.4; `reveal: all` shows them at once). `scan: {at: 1.5, per_row: 0.3, stop: 4, color: accent}` walks a bar down from the first row and stays on row `stop` (rows count from 0; `scan: true` walks to the last row). `highlight: [{row: 4, at: 4.0, text: found, color: accent2}]` tints a row and tags it. `counter: {label: rows scanned, to: 10000000, at: 1.5, seconds: 3}` ticks a number up beside the table (below it in vertical). Text shrinks to fit, with a warning, and a warning says when a cue comes before its row appears.
 - **Array:** `items` (0 to 12 cells) and up to 40 `steps`, each with `at` and exactly one action: `insert: x` (a sorted insert: before the first cell that sorts after it, numbers by value and before text), `push: x` (at the end), `pop: front|back`, `mark: [1, 2]` (cell indices, with optional `text` and `color`), `window: [0, 2]` (a bracket over cells; a later `window` slides it, and it is trimmed if cells leave) and `unmark: true` (clears marks and the window). A step without `at` comes `stagger` (default 0.8) seconds after the one before; steps run in time order. The steps are replayed when the spec loads, so `scenes[2].steps[3].pop: array is empty at 2.4s` is an error before rendering.
+- **Step badge:** `step: Token bucket` on a scene draws `STEP n/N · TOKEN BUCKET` and an N-segment progress bar at the top centre. N is the number of distinct `step` labels in the spec, in order of first appearance; n is this scene's label. Consecutive scenes may share a label. A warning appears when the watermark would overlap the badge.
+- **CTA end card:** `type: cta` with `question` (required), `answers` (0 to 4, shown as A to D) and `prompt` (default "Answer in the comments"). The bubble pops in, the answers follow one by one and the prompt pulses once a second. The first `cta` question is also added to `share-copy.txt` (before the links and hashtags, unless it is already in the description), and `--read-screen` reads the question, answers and prompt.
 - **Subtitles:** see [Word-by-word subtitles](#word-by-word-subtitles).
 - **Contact sheet:** `render --contact-frames N` (1 to 8) writes `contact.png` with N stills per scene, one row per scene, to check that reveals progress and nothing overlaps. Default: two per scene.
 - **Unknown keys are errors:** a misspelled or extra key stops the render, for example `error: scenes[0].titel: unknown field for a title scene; allowed: caption, eyebrow, narration, ...`, instead of being silently ignored.

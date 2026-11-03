@@ -87,6 +87,7 @@ def test_all_scene_types_render_at_the_right_size(fmt, tmp_path):
         {"type": "table", "columns": ["id", "name"], "rows": [["1", "Ada"], ["2", "Lin"]],
          "scan": True, "counter": {"to": 99}, "highlight": [{"row": 1, "text": "hit"}]},
         {"type": "array", "items": ["a", "b"], "steps": [{"at": 1, "insert": "ab"}, {"at": 2, "window": [0, 1]}]},
+        {"type": "cta", "question": "Which one do you use?", "answers": ["First", "Second", "Third"], "step": "Last"},
         theme="sumi")
     tl = Timeline(spec, fmt, tmp_path, scale=0.25)
     W, H = tl.ctx.W, tl.ctx.H
