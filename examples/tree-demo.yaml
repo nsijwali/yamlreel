@@ -1,0 +1,24 @@
+# Tree demo: a B-tree index lookup. The path lights the edges from the root down to the page that holds the key.
+# Render: yamlreel render examples/tree-demo.yaml --out out --preview --no-voice --contact-frames 6
+meta:
+  title: B-tree index lookup
+  tags: [databases, indexes]
+theme: midnight
+formats: [vertical, landscape]
+music: {style: ambient, seed: 5}
+scenes:
+  - type: tree
+    title: Finding key 75
+    seconds: 10
+    caption: Each page narrows the search, so a lookup touches only a few pages
+    nodes:
+      - {id: root, label: "40"}
+      - {id: left, label: "20", parent: root}
+      - {id: right, label: "60 80", parent: root}
+      - {id: l1, label: "5 10", parent: left}
+      - {id: l2, label: "25 30", parent: left}
+      - {id: r1, label: "45 55", parent: right}
+      - {id: r2, label: "65 75", parent: right}
+      - {id: r3, label: "85 95", parent: right}
+    path:
+      - {at: 4.0, nodes: [root, right, r2], text: "found in 2 hops"}

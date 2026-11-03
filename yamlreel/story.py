@@ -57,6 +57,9 @@ PLACEHOLDERS: dict[str, dict[str, Any]] = {
     "table": {"columns": [f"{TODO} 1", f"{TODO} 2", f"{TODO} 3"], "rows": [[TODO, TODO, TODO] for _ in range(3)]},
     "array": {"items": [TODO, TODO, TODO]},
     "meter": {"capacity": 10, "start": 10, "steps": [{"at": 1.0, "level": 4}, {"at": 3.0, "level": 10}]},
+    "tree": {"nodes": [{"id": "root", "label": TODO}, {"id": "a", "label": TODO, "parent": "root"},
+                       {"id": "b", "label": TODO, "parent": "root"}]},
+    "timeline": {"axis": {"from": 0, "to": 10, "ticks": 5}, "events": [{"x": 2, "at": 0.6}, {"x": 7, "at": 1.2}]},
 }
 
 

@@ -1,0 +1,33 @@
+# Timeline demo: a sliding-window rate limiter. The window moves along the axis and the count follows it.
+# Render: yamlreel render examples/timeline-demo.yaml --out out --preview --no-voice --contact-frames 6
+meta:
+  title: Sliding window rate limiter
+  tags: [rate-limiting, systems]
+theme: midnight
+formats: [vertical, landscape]
+music: {style: ambient, seed: 6}
+scenes:
+  - type: timeline
+    title: Requests in the last 60 s
+    seconds: 10
+    caption: The window slides, so old requests stop counting
+    axis: {from: 0, to: 120, unit: s, ticks: 20}
+    count: true
+    events:
+      - {x: 5, at: 0.4}
+      - {x: 12, at: 0.55}
+      - {x: 22, at: 0.7, label: req}
+      - {x: 31, at: 0.85}
+      - {x: 44, at: 1.0}
+      - {x: 52, at: 1.15, label: burst, color: accent}
+      - {x: 55, at: 1.25, color: accent}
+      - {x: 58, at: 1.35, color: accent}
+      - {x: 71, at: 1.5}
+      - {x: 83, at: 1.65}
+      - {x: 96, at: 1.8, label: req}
+      - {x: 104, at: 1.95}
+      - {x: 113, at: 2.1}
+    window:
+      - {at: 2.8, range: [0, 60], text: "first 60 s"}
+      - {at: 5.0, range: [40, 100], text: "slides forward"}
+      - {at: 7.4, range: [60, 120], text: "old requests drop out"}
