@@ -105,6 +105,11 @@ class Scene:
         self.caption = spec.get("caption")
         self._static: dict[str, Image.Image] = {}
 
+    def layout_warnings(self, caption: tuple[float, float, float, float] | None) -> list[str]:
+        """Layout problems found without drawing, as messages the timeline prefixes with `scenes[i]:`. `caption` is
+        the caption pill's box (x0, y0, x1, y1) when this scene has one. Most scenes have nothing to report."""
+        return []
+
     def static_layer(self, key: str, draw: Callable[[Image.Image], None]) -> Image.Image:
         """A fresh copy of the background with `draw(image)` applied to it. `draw` runs once per scene and key and
         its result is kept, so chrome that never changes (a table frame, a track) is not redrawn on every frame.

@@ -116,6 +116,14 @@ class Timeline:
                               f"scene ({sc.duration:.2f}s); shortened to fit")
                 tr["seconds"] = sc.duration
         self._caps = {i: make_caption(self.ctx, sc.caption) for i, sc in enumerate(self.scenes) if sc.caption}
+        for i, sc in enumerate(self.scenes):
+            box = None
+            if i in self._caps:
+                cw, ch = self._caps[i][0].size
+                x0, y0 = (self.ctx.W - cw) / 2, self.ctx.caption_y - ch / 2
+                box = (x0, y0, x0 + cw, y0 + ch)
+            for msg in sc.layout_warnings(box):
+                self.ctx.warn(f"scenes[{i}]: {msg}")
         self._subs: dict[int, subs_mod.SubtitleTrack] = {}  # scene index -> its subtitles
         self._cap_from: dict[int, float] = {}  # a subtitled scene's caption waits until its speech has ended
         for i, sw in (words or {}).items():

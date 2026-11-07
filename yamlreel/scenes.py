@@ -382,7 +382,7 @@ class DiagramScene(Scene):
             px = min(max(x * W, w / 2 + ctx.margin * 0.5), W - w / 2 - ctx.margin * 0.5)
             py = y * H
             self.nodes[n["id"]] = dict(blk=blk, w=w, h=h, x=px, y=py, kind=n.get("kind", "service"),
-                                       appear=float(n.get("at", t_auto)), sub=n.get("sub"))
+                                       appear=float(n.get("at", t_auto)), sub=n.get("sub"), label=str(n["label"]))
             t_auto += 0.45
         self.edges = []
         prev = 0.0
@@ -404,6 +404,23 @@ class DiagramScene(Scene):
             tag = ctx.block(str(f["text"]), "sans_bold", (36 if ctx.vertical else 30) * u, W * 0.4, align="center") if f.get("text") else None
             self.flash.append(dict(node=self.nodes[f["node"]], at=float(f["at"]), color=color, tag=tag))
         self.title = ctx.block(str(spec["title"]), ctx.display, 56 * u * ctx.fs, W - 2 * ctx.margin, align="center") if spec.get("title") else None
+
+    def layout_warnings(self, caption: tuple[float, float, float, float] | None) -> list[str]:
+        """The title and the caption pill each cover whatever node sits under them. Warn rather than move anything."""
+        c = self.ctx
+        out: list[str] = []
+        areas: list[tuple[str, tuple[float, float, float, float]]] = []
+        if self.title:
+            x0, y0 = c.W / 2 - self.title.width / 2, c.H * 0.09
+            areas.append(("the title", (x0, y0, x0 + self.title.width, y0 + self.title.height)))
+        if caption is not None:
+            areas.append(("the caption", caption))
+        for name, (ax0, ay0, ax1, ay1) in areas:
+            for nid, n in self.nodes.items():
+                if ax0 < n["x"] + n["w"] / 2 and n["x"] - n["w"] / 2 < ax1 and ay0 < n["y"] + n["h"] / 2 and n["y"] - n["h"] / 2 < ay1:
+                    out.append(f"{name} overlaps diagram node {nid!r} ({n['label'][:30]!r}); move the node "
+                               f"{'down' if name == 'the title' else 'up'} ({'vy' if c.vertical else 'y'})")
+        return out
 
     def _col(self, name: str, alpha: float = 1.0) -> tuple[int, int, int, int]:
         r, g, b = getattr(self.ctx.theme, name)

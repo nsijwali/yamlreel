@@ -13,11 +13,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -27,6 +28,8 @@ SAMPLE_RATE = 44100
 MAX_NARRATION_SECONDS = 600
 MAX_RESPONSE_BYTES = 200 * 1024 * 1024
 DEFAULT_URL = "http://127.0.0.1:3900/mcp/"
+LOADING_TRIES = 5  # a 503 means VoiceStudio is up but its model is still loading
+LOADING_BACKOFF = 3.0  # seconds before the second try; each wait is 1.5x the one before
 NARRATION_LEAD = 0.3  # seconds of silence between a scene's start and its narration
 CACHE_KEY_VERSION = 2  # bump when what a cached clip depends on changes; old files are then never read
 
@@ -77,16 +80,25 @@ class _Session:
         if self.sid:
             headers["Mcp-Session-Id"] = self.sid
         req = Request(self.server.url, data=json.dumps(payload).encode(), headers=headers, method="POST")
-        try:
-            with urlopen(req, timeout=self.server.timeout) as r:  # noqa: S310 (scheme checked in VoiceServer)
-                self.sid = r.headers.get("Mcp-Session-Id") or self.sid
-                body = r.read(MAX_RESPONSE_BYTES + 1)
-                ctype = r.headers.get("Content-Type", "")
-        except URLError as e:
-            raise VoiceError(f"cannot reach the voice server at {self.server.url}: {e.reason}. "
-                             "Is VoiceStudio running?") from e
-        except OSError as e:
-            raise VoiceError(f"voice server request failed: {e}") from e
+        loading = 0  # how many tries came back 503: the model may still be loading
+        for attempt in range(LOADING_TRIES):
+            try:
+                with urlopen(req, timeout=self.server.timeout) as r:  # noqa: S310 (scheme checked in VoiceServer)
+                    self.sid = r.headers.get("Mcp-Session-Id") or self.sid
+                    body = r.read(MAX_RESPONSE_BYTES + 1)
+                    ctype = r.headers.get("Content-Type", "")
+                break
+            except HTTPError as e:  # before URLError, which it subclasses
+                if e.code == 503:
+                    loading += 1
+                    if attempt + 1 < LOADING_TRIES:
+                        time.sleep(LOADING_BACKOFF * 1.5 ** attempt)
+                        continue
+                raise VoiceError(self._unreachable(e.reason, loading == LOADING_TRIES)) from e
+            except URLError as e:
+                raise VoiceError(self._unreachable(e.reason, False)) from e
+            except OSError as e:
+                raise VoiceError(f"voice server request failed: {e}") from e
         if len(body) > MAX_RESPONSE_BYTES:
             raise VoiceError("voice server response is too large")
         if "id" not in payload or not body.strip():
@@ -100,6 +112,10 @@ class _Session:
                         return msg
             raise VoiceError("voice server sent no reply")
         return json.loads(text)
+
+    def _unreachable(self, reason: Any, loading: bool) -> str:
+        hint = " It answered 503 every time, so it may still be loading the model; try again shortly." if loading else ""
+        return f"cannot reach the voice server at {self.server.url}: {reason}. Is VoiceStudio running?{hint}"
 
     def rpc(self, method: str, params: dict[str, Any]) -> Any:
         self._id += 1

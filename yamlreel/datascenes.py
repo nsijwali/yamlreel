@@ -533,6 +533,29 @@ class ArrayScene(Scene):
         if self.states[-1].t + MOVE_SECONDS > self.duration:
             ctx.warn("an array step ends after the scene does; lengthen the scene or move the steps earlier")
 
+    def layout_warnings(self, caption: tuple[float, float, float, float] | None) -> list[str]:
+        """Step labels (mark and window text) that run past the left or right edge of the frame. Each label is
+        centred on its cells, so one near either end of a wide array can be cut off; this only reports it."""
+        out: list[str] = []
+        for s in self.states:
+            n = len(s.cells)
+            labels: list[tuple[str, float, float]] = []  # (text, centre x, width)
+            ids = [i for i, c in enumerate(s.cells) if c.id in s.marks]
+            if ids and s.mark_text:
+                cx = sum(self.slot_x(i, n) for i in ids) / len(ids)
+                labels.append((s.mark_text, cx, self.tag_blocks[("mark", s.mark_text)].width))
+            if s.window is not None and s.window_text:
+                ext = self._window_extent(*s.window, n)
+                labels.append((s.window_text, (ext[0] + ext[1]) / 2, self.tag_blocks[("window", s.window_text)].width))
+            for text, cx, width in labels:
+                sides = [name for name, over in (("left", width / 2 - cx), ("right", cx + width / 2 - self.ctx.W))
+                         if over > 0.5]
+                msg = (f"array label {text!r} is clipped at the {' and '.join(sides)} edge of the frame; "
+                       "put it on a cell nearer the middle or shorten it")
+                if sides and msg not in out:
+                    out.append(msg)
+        return out
+
     # --- geometry (also used by tests) ------------------------------------------------------------------
 
     def slot_x(self, index: float, n: float) -> float:
