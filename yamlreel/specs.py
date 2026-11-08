@@ -17,11 +17,13 @@ from . import shots
 from .config import (DEFAULTS, HARD_LIMITS, SHARED_KEYS, Config, _absolutize, clamp_limits, describe_key,
                      describe_value, merge, normalize_music)
 from .config import yaml_problem as _yaml_problem
-from .datascenes import (ARRAY_ACTIONS, DEFAULT_CTA_PROMPT, MAX_ANSWER_CHARS, MAX_ANSWERS, MAX_AXIS_TICKS, MAX_CELL_CHARS,
-                         MAX_CELLS, MAX_METER_CAPACITY, MAX_PROMPT_CHARS, MAX_QUESTION_CHARS, MAX_SLOTS, MAX_STEPS,
+from .datascenes import (ARRAY_ACTIONS, DEFAULT_CTA_PROMPT, GRID_ACTIONS, GRID_CHARS, GRID_ORDERS, GRID_REVEALS,
+                         MAX_ANSWER_CHARS, MAX_ANSWERS, MAX_AXIS_TICKS, MAX_CELL_CHARS, MAX_CELLS, MAX_GRID,
+                         MAX_METER_CAPACITY, MAX_PROMPT_CHARS, MAX_QUESTION_CHARS, MAX_SEED, MAX_SLOTS, MAX_STEPS,
                          MAX_TABLE_COLS, MAX_TABLE_ROWS, MAX_TIMELINE_EVENTS, MAX_TIMELINE_WINDOWS, MAX_TREE_CHILDREN,
                          MAX_TREE_LEVELS, MAX_TREE_NODES, MAX_TREE_PATHS, METER_SHAPES, POP_SIDES, ArrayScene,
-                         ArrayStepError, MeterScene, TableScene, TimelineScene, TreeScene, array_states)
+                         ArrayStepError, GridScene, GridStepError, MeterScene, TableScene, TimelineScene, TreeScene,
+                         array_states, grid_states)
 from .music import ENERGY_LEVELS, NOTE_OFFSETS, SCALES, STYLE_DEFAULTS
 from .subtitles import (DEFAULT_SUBTITLES, MAX_KEYWORD_CHARS, MAX_KEYWORDS, POSITIONS, STYLES)
 from .scenes import SCENE_TYPES, DiagramScene, Scene
@@ -33,7 +35,7 @@ FORMATS = {"landscape": (1920, 1080), "vertical": (1080, 1920), "square": (1080,
 
 DEFAULT_SECONDS = {"title": 3.0, "type": 3.0, "shot": 4.0, "diagram": 7.0,
                    "bullets": 5.0, "code": 6.0, "stat": 3.5, "table": 8.0, "array": 8.0, "meter": 10.0, "tree": 8.0,
-                   "timeline": 10.0, "cta": 6.0}
+                   "timeline": 10.0, "grid": 10.0, "cta": 6.0}
 REQUIRED = {
     "title": ["title"],
     "type": ["text"],
@@ -47,6 +49,7 @@ REQUIRED = {
     "meter": ["capacity"],
     "tree": ["nodes"],
     "timeline": ["axis", "events"],
+    "grid": ["cells"],
     "cta": ["question"],
 }
 MUSIC_STYLES = {*STYLE_DEFAULTS, "none"}
@@ -681,6 +684,113 @@ def _meter_steps(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[
     return out
 
 
+def _grid_cells(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[str]:
+    hint = 'quote rows that start with # ("#..#")'  # YAML reads an unquoted # as the start of a comment
+    if v is None:
+        raise SpecError(f"{path} must be a list of rows; {hint}")
+    rows = _list(path, v, 1, MAX_GRID, "MAX_GRID")
+    for n, row in enumerate(rows):
+        p = f"{path}[{n}]"
+        if not isinstance(row, str):
+            raise SpecError(f"{p} must be text; {hint}")
+        if not 1 <= len(row) <= MAX_GRID:
+            raise SpecError(f"{p} has {len(row)} cells; use 1 to {MAX_GRID} (MAX_GRID)")
+        if len(row) != len(rows[0]):
+            raise SpecError(f"{p} has {len(row)} cells; row 0 has {len(rows[0])}")
+        for j, ch in enumerate(row):
+            if ch not in GRID_CHARS:
+                raise SpecError(f"{p}: {ch!r} at column {j} is not a cell; use # (foreground), . (card) or o (accent)")
+    return list(rows)
+
+
+def _grid_seed(path: str, v: Any, sc: dict[str, Any], env: _Env) -> int:
+    return _number(path, v, 0, MAX_SEED, integer=True)
+
+
+def _grid_point(path: str, v: Any, rows: int, cols: int) -> list[int]:
+    ok = (isinstance(v, list) and len(v) == 2 and all(_is_number(x) and float(x).is_integer() for x in v)
+          and 0 <= v[0] < rows and 0 <= v[1] < cols)
+    if not ok:
+        raise SpecError(f"{path} must be [row, col] inside the {rows} x {cols} grid")
+    return [int(v[0]), int(v[1])]
+
+
+def _grid_points(path: str, v: Any, rows: int, cols: int) -> list[list[int]]:
+    return [_grid_point(f"{path}[{n}]", x, rows, cols)
+            for n, x in enumerate(_list(path, v, 1, rows * cols))]
+
+
+# The keys a grid step takes besides `at` and its action, and which actions take them.
+_GRID_EXTRAS = {"radius": ("stain",), "seconds": ("reveal", "stain"), "per_cell": ("recover",),
+                "order": ("recover",), "text": ("outline", "fail"), "color": ("status", "outline")}
+_GRID_OWNERS = {"radius": "a stain", "seconds": "a reveal or stain", "per_cell": "a recover", "order": "a recover",
+                "text": "an outline or fail", "color": "a status or outline"}
+
+
+def _grid_step(path: str, raw: Any, rows: int, cols: int, seconds: float) -> dict[str, Any]:
+    st = _mapping(path, raw)
+    _no_unknown(path, st, GridScene.STEP_FIELDS, "a grid step")
+    given = [a for a in GRID_ACTIONS if a in st]
+    if len(given) != 1:
+        found = f", found {' and '.join(given)}" if given else ""
+        raise SpecError(f"{path}: needs exactly one of {', '.join(GRID_ACTIONS)}{found}")
+    action = given[0]
+    if "at" not in st:
+        raise SpecError(f"{path}: needs at")
+    out: dict[str, Any] = {"at": _number(f"{path}.at", st["at"], 0, seconds)}
+    p, v = f"{path}.{action}", st[action]
+    if action == "reveal":
+        out[action] = _choice(p, v, GRID_REVEALS)
+    elif action == "stain":
+        out[action] = _grid_point(p, v, rows, cols)
+    elif action in ("clear_stain", "unmark", "fail"):
+        if v is not True:
+            raise SpecError(f"{p} must be true")
+        out[action] = True
+    elif action == "lose":
+        out[action] = _grid_points(p, v, rows, cols)
+    elif action == "recover":
+        out[action] = "all" if v == "all" else _grid_points(p, v, rows, cols)
+    elif action == "status":
+        out[action] = _cell_text(p, v)
+    else:  # outline
+        ok = (isinstance(v, list) and len(v) == 4 and all(_is_number(x) and float(x).is_integer() for x in v)
+              and 0 <= v[0] <= v[2] < rows and 0 <= v[1] <= v[3] < cols)
+        if not ok:
+            raise SpecError(f"{p} must be [r0, c0, r1, c1] inside the {rows} x {cols} grid with row0 <= row1 and col0 <= col1")
+        out[action] = [int(x) for x in v]
+    for key, owners in _GRID_EXTRAS.items():
+        if key in st and action not in owners:
+            raise SpecError(f"{path}.{key}: only {_GRID_OWNERS[key]} step has {key}")
+    if action == "stain" and "radius" not in st:
+        raise SpecError(f"{path}: a stain needs radius")
+    kp = f"{path}."
+    for key, check in (("radius", lambda x: _number(kp + "radius", x, 0.5, MAX_GRID)),
+                       ("seconds", lambda x: _number(kp + "seconds", x, 0.1, 10)),
+                       ("per_cell", lambda x: _number(kp + "per_cell", x, 0.01, 2)),
+                       ("order", lambda x: _choice(kp + "order", x, GRID_ORDERS)),
+                       ("text", lambda x: _cell_text(kp + "text", x)),
+                       ("color", lambda x: _choice(kp + "color", x, COLOR_NAMES))):
+        if key in st:
+            out[key] = check(st[key])
+    return out
+
+
+def _grid_steps(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
+    rows, cols = len(sc["cells"]), len(sc["cells"][0])  # `cells` is checked first
+    out: list[dict[str, Any]] = []
+    for n, raw in enumerate(_list(path, v, 0, MAX_STEPS, "MAX_STEPS")):
+        step = _grid_step(f"{path}[{n}]", raw, rows, cols, sc["seconds"])
+        if out and step["at"] < out[-1]["at"]:
+            raise SpecError(f"{path}[{n}].at must not be earlier than the previous step ({_fmt(out[-1]['at'])})")
+        out.append(step)
+    try:  # replay the steps now, so a recover with nothing lost fails at load time
+        grid_states({"cells": sc["cells"], "steps": out, "seed": sc.get("seed", 0)})
+    except GridStepError as e:
+        raise SpecError(f"{path.rsplit('.', 1)[0]}.{e}") from e
+    return out
+
+
 def _tree_nodes(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     level: dict[str, int] = {}
@@ -878,6 +988,8 @@ FIELD_CHECKS: dict[str, Checker] = {
     "axis": _axis,
     "events": _timeline_events,
     "window": _timeline_window,
+    "cells": _grid_cells,
+    "seed": _grid_seed,
 }
 # Fields whose meaning depends on the scene type get their own checker; it wins over FIELD_CHECKS.
 TYPE_CHECKS: dict[str, dict[str, Checker]] = {
@@ -886,11 +998,13 @@ TYPE_CHECKS: dict[str, dict[str, Checker]] = {
     "meter": {"steps": _meter_steps},
     "tree": {"nodes": _tree_nodes},
     "timeline": {"count": _bool_field},
+    "grid": {"steps": _grid_steps},
 }
 # Fields whose checker reads another field of the same scene, so that one is checked first.
 _CHECKED_FIRST = ("code", "nodes")
 _CHECKED_FIRST_BY_TYPE = {"table": ("columns", "rows"), "array": ("items", "stagger"),
-                           "meter": ("shape", "capacity", "start"), "timeline": ("axis",)}
+                           "meter": ("shape", "capacity", "start"), "timeline": ("axis",),
+                           "grid": ("cells", "seconds", "seed")}
 
 
 def _scene(i: int, raw: Any, env: _Env) -> dict[str, Any]:

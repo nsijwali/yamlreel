@@ -60,6 +60,7 @@ PLACEHOLDERS: dict[str, dict[str, Any]] = {
     "tree": {"nodes": [{"id": "root", "label": TODO}, {"id": "a", "label": TODO, "parent": "root"},
                        {"id": "b", "label": TODO, "parent": "root"}]},
     "timeline": {"axis": {"from": 0, "to": 10, "ticks": 5}, "events": [{"x": 2, "at": 0.6}, {"x": 7, "at": 1.2}]},
+    "grid": {"cells": ["#.#", ".#.", "#.#"]},
 }
 
 

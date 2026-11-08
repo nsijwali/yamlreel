@@ -9,15 +9,16 @@ from __future__ import annotations
 
 import bisect
 import math
+import random
 import re
-from dataclasses import dataclass
-from typing import Any, ClassVar
+from dataclasses import dataclass, replace
+from typing import Any, ClassVar, Iterable
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 from .scenebase import Ctx, Scene, _appear
 from .textkit import MAX_COUNT_DECIMALS, TextBlock, blit, ease, ease_out, lerp_color, make_block
-from .theme import font
+from .theme import Color, font
 
 MAX_TABLE_ROWS = 12
 MAX_TABLE_COLS = 6
@@ -1394,6 +1395,544 @@ class TimelineScene(Scene):
         if i >= 0 and i in self.texts:
             blit(img, self.texts[i], (c.W / 2, self.text_y), th.accent2, _appear(t, self.segments[i].at, WINDOW_TEXT_FADE),
                  "mc")
+        return img
+
+
+# --- grid ------------------------------------------------------------------------------------------------
+
+MAX_GRID = 33              # rows or columns of a grid
+MAX_SEED = 1_000_000
+GRID_CHARS = "#.o"         # foreground, card, accent
+GRID_ACTIONS = ("reveal", "stain", "clear_stain", "lose", "recover", "status", "outline", "unmark", "fail")
+GRID_REVEALS = ("sweep", "pop")
+GRID_ORDERS = ("row", "random")
+GRID_REVEAL_SECONDS = 1.0
+GRID_STAIN_SECONDS = 1.5
+GRID_PER_CELL = 0.08       # seconds between recovered cells
+GRID_IMPLICIT_REVEAL = (0.1, 0.4)   # with no reveal step: the grid fades in from here, over this long
+LOSE_SECONDS = 0.3
+STAIN_FADE_SECONDS = 0.5   # clear_stain: the stain fades while its cells become lost
+RECOVER_SECONDS = 0.35
+STATUS_SECONDS = 0.3
+FAIL_PULSE_SECONDS = 0.9
+FAIL_TEXT_SECONDS = 1.5
+OUTLINE_SECONDS = 0.25
+MIN_CELL_PX = 16           # a grid cell smaller than this (in 1080-wide units) is reported
+STAIN_POINTS = 48
+STAIN_WOBBLE = (3, 4, 5)   # the stain's edge wobbles with these harmonics
+Point = tuple[int, int]    # (row, column)
+
+
+@dataclass(frozen=True)
+class Stain:
+    center: Point
+    radius: float            # in cells
+    seconds: float           # how long it takes to spread
+    t: float                 # when it starts
+    cells: frozenset[Point]  # the cells it covers
+
+
+@dataclass(frozen=True)
+class Outline:
+    box: tuple[int, int, int, int]   # row0, col0, row1, col1, inclusive
+    text: str
+    color: str
+    t: float
+
+
+@dataclass(frozen=True)
+class GridState:
+    """The grid after one step (or at the start)."""
+    t: float
+    step: int | None                  # index into the spec's `steps` (None for the start)
+    action: str | None
+    shown: bool                       # the grid has been revealed (always true when the spec has no reveal step)
+    lost: frozenset[Point]
+    stain: Stain | None
+    outlines: tuple[Outline, ...]
+    status: str
+    status_color: str
+    recovered: tuple[Point, ...]      # the cells this step brings back, in the order they come back
+
+
+class GridStepError(ArrayStepError):
+    """A grid step that cannot be applied. `str()` reads like `steps[5].recover: no cells are lost at 6s`."""
+
+
+def _grid_rng(seed: int, step: int) -> random.Random:
+    return random.Random(seed * 1000 + step)
+
+
+def _stain_wobble(seed: int, step: int) -> list[tuple[int, float, float]]:
+    """(harmonic, amplitude, phase) of the stain's edge for this step."""
+    rng = _grid_rng(seed, step)
+    return [(k, rng.uniform(0.04, 0.09), rng.uniform(0.0, 2 * math.pi)) for k in STAIN_WOBBLE]
+
+
+def _stain_edge(radius: float, wobble: list[tuple[int, float, float]], theta: float) -> float:
+    return radius * (1 + sum(a * math.sin(k * theta + phi) for k, a, phi in wobble))
+
+
+def stain_cells(center: Point, radius: float, seed: int, step: int, rows: int, cols: int) -> frozenset[Point]:
+    """The cells a stain covers. Works in cell units, so every format gets the same set: a cell is covered when
+    its distance from the centre is within the wobbling edge, which never strays beyond 1.3 times the radius."""
+    wobble = _stain_wobble(seed, step)
+    r0, c0 = center
+    reach = int(math.ceil(radius * 1.3))
+    out: set[Point] = set()
+    for r in range(max(0, r0 - reach), min(rows, r0 + reach + 1)):
+        for c in range(max(0, c0 - reach), min(cols, c0 + reach + 1)):
+            dr, dc = r - r0, c - c0
+            if math.hypot(dr, dc) <= _stain_edge(radius, wobble, math.atan2(dr, dc)):
+                out.add((r, c))
+    return frozenset(out)
+
+
+def stain_outline(radius: float, seed: int, step: int, points: int = STAIN_POINTS) -> list[tuple[float, float]]:
+    """The edge of a stain as (d_col, d_row) offsets from its centre, in cells."""
+    wobble = _stain_wobble(seed, step)
+    out = []
+    for i in range(points):
+        theta = 2 * math.pi * i / points
+        edge = _stain_edge(radius, wobble, theta)
+        out.append((edge * math.cos(theta), edge * math.sin(theta)))
+    return out
+
+
+def reveal_order(rows: int, cols: int, seed: int, step: int, mode: str) -> list[Point]:
+    """The order the cells appear in: row by row for `sweep`, shuffled for `pop`."""
+    cells = [(r, c) for r in range(rows) for c in range(cols)]
+    if mode == "pop":
+        _grid_rng(seed, step).shuffle(cells)
+    return cells
+
+
+def recover_order(cells: Iterable[Point], seed: int, step: int, order: str) -> list[Point]:
+    """The order lost cells come back in: row by row, or shuffled."""
+    out = sorted(cells)
+    if order == "random":
+        _grid_rng(seed, step).shuffle(out)
+    return out
+
+
+def grid_states(spec: dict[str, Any]) -> list[GridState]:
+    """Replay the grid's steps in time order (ties keep the order of the list). Returns the start state and one
+    state per step. Raises GridStepError for a step that cannot be applied: recovering cells that are not lost,
+    clearing a stain that is not there, or anything but a status before the reveal."""
+    cells = spec["cells"]
+    rows, cols = len(cells), len(cells[0])
+    seed = int(spec.get("seed") or 0)
+    steps = list(spec.get("steps") or [])
+    state = GridState(0.0, None, None, not any("reveal" in s for s in steps), frozenset(), None, (), "", "fg", ())
+    states = [state]
+    back_at: dict[Point, float] = {}   # recovered cell -> when the renderer brings it back
+
+    def check_settled(k: int, action: str, cells_: Iterable[Point], at: float) -> None:
+        for r, c in sorted(cells_):
+            if back_at.get((r, c), -math.inf) > at + 1e-9:
+                raise GridStepError(k, action, f"cell [{r}, {c}] is still coming back", at)
+
+    for k in sorted(range(len(steps)), key=lambda k: (float(steps[k]["at"]), k)):
+        step, at = steps[k], float(steps[k]["at"])
+        given = [a for a in GRID_ACTIONS if a in step]
+        if len(given) != 1:
+            found = f", found {' and '.join(given)}" if given else ""
+            raise GridStepError(k, "", f"needs exactly one of {', '.join(GRID_ACTIONS)}{found}", at)
+        action = given[0]
+        if not state.shown and action not in ("reveal", "status"):
+            raise GridStepError(k, action, "the grid is not shown yet", at)
+        change: dict[str, Any] = {}
+        if action == "reveal":
+            if state.shown:
+                raise GridStepError(k, action, "the grid is already shown", at)
+            change = {"shown": True}
+        elif action == "stain":
+            if state.stain is not None:
+                raise GridStepError(k, action, "the grid already has a stain", at)
+            r0, c0 = step["stain"]
+            radius = float(step["radius"])
+            covered = stain_cells((r0, c0), radius, seed, k, rows, cols)
+            check_settled(k, action, covered, at)
+            change = {"stain": Stain((r0, c0), radius, float(step.get("seconds", GRID_STAIN_SECONDS)), at, covered)}
+        elif action == "clear_stain":
+            stain = state.stain
+            if stain is None:
+                raise GridStepError(k, action, "there is no stain", at)
+            if at < stain.t + stain.seconds - 1e-9:
+                raise GridStepError(k, action, "the stain is still spreading", at)
+            check_settled(k, action, stain.cells, at)
+            change = {"stain": None, "lost": state.lost | stain.cells}
+        elif action == "lose":
+            lose = frozenset((int(r), int(c)) for r, c in step["lose"])
+            check_settled(k, action, lose, at)
+            change = {"lost": state.lost | lose}
+        elif action == "recover":
+            if step["recover"] != "all":
+                check_settled(k, action, [(int(r), int(c)) for r, c in step["recover"]], at)
+            if not state.lost:
+                raise GridStepError(k, action, "no cells are lost", at)
+            if step["recover"] == "all":
+                back = state.lost
+            else:
+                back = frozenset((int(r), int(c)) for r, c in step["recover"])
+                for r, c in step["recover"]:
+                    if (int(r), int(c)) not in state.lost:
+                        raise GridStepError(k, action, f"cell [{r}, {c}] is not lost", at)
+            order = recover_order(back, seed, k, str(step.get("order", "row")))
+            per = float(step.get("per_cell", GRID_PER_CELL))
+            for i, cell in enumerate(order):
+                back_at[cell] = at + i * per
+            change = {"lost": state.lost - back, "recovered": tuple(order)}
+        elif action == "status":
+            change = {"status": str(step["status"]), "status_color": str(step.get("color", "fg"))}
+        elif action == "outline":
+            r0, c0, r1, c1 = (int(x) for x in step["outline"])
+            change = {"outlines": (*state.outlines, Outline((r0, c0, r1, c1), str(step.get("text", "")),
+                                                            str(step.get("color", "accent")), at))}
+        elif action == "unmark":
+            change = {"outlines": ()}
+        state = replace(state, t=at, step=k, action=action, **{"recovered": (), **change})
+        states.append(state)
+    return states
+
+
+class GridScene(Scene):
+    """A matrix of cells (`#` foreground, `.` card, `o` accent) that is revealed, stained, loses cells and gets them
+    back, with a status line and outlines, following `grid_states`."""
+
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"title", "cells", "steps", "seed"})
+    STEP_FIELDS: ClassVar[frozenset[str]] = frozenset({"at", "seconds", "radius", "per_cell", "order", "text", "color",
+                                                       *GRID_ACTIONS})
+
+    def __init__(self, spec: dict[str, Any], ctx: Ctx):
+        super().__init__(spec, ctx)
+        u, th = ctx.u, ctx.theme
+        W, H = ctx.W, ctx.H
+        margin = fill_margin(ctx)
+        self.grid = [str(row) for row in spec["cells"]]
+        self.rows, self.cols = len(self.grid), len(self.grid[0])
+        self.seed = int(spec.get("seed") or 0)
+        self.steps = list(spec.get("steps") or [])
+        self.states = grid_states(spec)
+
+        # --- layout: title, status band, then the grid in a frame
+        self.title = (ctx.block(str(spec["title"]), ctx.display, 56 * u * ctx.fs, W - 2 * margin, align="center")
+                      if spec.get("title") else None)
+        title_h = self.title.height + 36 * u if self.title else 0.0
+        self.band_h = 64 * u * ctx.fs if any(s.action == "status" for s in self.states) else 0.0
+        bottom = H * (0.72 if ctx.vertical else 0.84)
+        side = min(W - 2 * margin, bottom - (H * 0.05 + title_h + self.band_h))
+        self.pitch = max(1, int((side - 48 * u) // max(self.rows, self.cols)))
+        self.gap = max(1, round(0.06 * self.pitch))
+        self.cell = max(1, self.pitch - self.gap)
+        pad = 24 * u
+        block_w, block_h = self.cols * self.pitch - self.gap, self.rows * self.pitch - self.gap
+        total = title_h + self.band_h + block_h + 2 * pad
+        top = min(max(H * 0.05, centre_y(ctx) - total / 2), max(H * 0.05, bottom - total))
+        self.title_xy = (W / 2, top)
+        self.band_cy = top + title_h + self.band_h / 2
+        gx0, gy0 = int(round((W - block_w) / 2)), int(round(top + title_h + self.band_h + pad))
+        self.block = (gx0, gy0, gx0 + block_w, gy0 + block_h)
+        self.frame_box = (gx0 - int(pad), gy0 - int(pad), gx0 + block_w + int(pad), gy0 + block_h + int(pad))
+        self.rects = [[(gx0 + c * self.pitch, gy0 + r * self.pitch, gx0 + c * self.pitch + self.cell,
+                        gy0 + r * self.pitch + self.cell) for c in range(self.cols)] for r in range(self.rows)]
+        self.radius = min(max(1, int(self.cell * 0.18)), self.cell // 2)
+
+        # --- colours and the tiles that are pasted again and again
+        by_char = {"#": th.fg, ".": th.card, "o": th.accent}
+        self.base = {(r, c): by_char[ch] for r, row in enumerate(self.grid) for c, ch in enumerate(row)}
+        self.frame_fill = lerp_color(th.card, th.line, 0.25)
+        self.lost_fill = lerp_color(th.card, th.bg, 0.6)
+        self.stain_color = lerp_color(th.accent2, th.fg, 0.35)
+        cs = self.cell
+        self.cell_mask = Image.new("L", (cs, cs), 0)
+        ImageDraw.Draw(self.cell_mask).rounded_rectangle([0, 0, cs - 1, cs - 1], self.radius, fill=255)
+        hatch = Image.new("L", (cs, cs), 0)
+        hd = ImageDraw.Draw(hatch)
+        for k in range(-cs, cs, max(4, cs // 3)):
+            hd.line([(k, cs), (k + cs, 0)], fill=255, width=max(1, int(u * 1.5)))
+        self.hatch = ImageChops.multiply(hatch, self.cell_mask)
+        self.lost_tile = Image.new("RGB", (cs, cs), self.lost_fill)
+        self.lost_tile.paste(th.muted, (0, 0), self.hatch)
+        self._hatch_alpha: dict[int, Image.Image] = {}
+
+        # --- per-cell events: when a cell is lost and when it comes back
+        self.events: dict[Point, list[tuple[float, str, float]]] = {}
+        for prev, cur in zip(self.states, self.states[1:]):
+            if cur.action in ("lose", "clear_stain"):
+                dur = LOSE_SECONDS if cur.action == "lose" else STAIN_FADE_SECONDS
+                for cell in sorted(cur.lost - prev.lost):
+                    self.events.setdefault(cell, []).append((cur.t, "lose", dur))
+            elif cur.action == "recover":
+                per = float(self.steps[cur.step].get("per_cell", GRID_PER_CELL))
+                for i, cell in enumerate(cur.recovered):
+                    self.events.setdefault(cell, []).append((cur.t + i * per, "recover", RECOVER_SECONDS))
+        for evs in self.events.values():
+            evs.sort(key=lambda e: e[0])
+        self.event_times = {cell: [e[0] for e in evs] for cell, evs in self.events.items()}
+        self.eventful = sorted(self.events)
+        self.first_event = min((evs[0][0] for evs in self.events.values()), default=math.inf)
+
+        # --- the reveal: every cell has a start time and fades in over `reveal_fade`
+        reveal = next((s for s in self.states if s.action == "reveal"), None)
+        n = self.rows * self.cols
+        if reveal is not None:
+            rstep = self.steps[reveal.step]
+            self.reveal_mode = str(rstep["reveal"])
+            secs = float(rstep.get("seconds", GRID_REVEAL_SECONDS))
+            self.reveal_order = reveal_order(self.rows, self.cols, self.seed, reveal.step, self.reveal_mode)
+            self.reveal_fade = 0.25 * secs
+            if self.reveal_mode == "sweep":
+                self.reveal_starts = [reveal.t + (r / self.rows) * 0.75 * secs for r, _ in self.reveal_order]
+            else:
+                self.reveal_starts = [reveal.t + (i / n) * 0.75 * secs for i in range(n)]
+        else:
+            self.reveal_mode = "all"
+            self.reveal_order = reveal_order(self.rows, self.cols, self.seed, 0, "sweep")
+            self.reveal_fade = GRID_IMPLICIT_REVEAL[1]
+            self.reveal_starts = [GRID_IMPLICIT_REVEAL[0]] * n
+        self.reveal_start = dict(zip(self.reveal_order, self.reveal_starts))
+
+        # --- stains, outlines, status lines and failures, with their text blocks
+        self.stains: list[dict[str, Any]] = []
+        self.outlines: list[dict[str, Any]] = []
+        self.status_times: list[float] = []
+        self.status_items: list[tuple[TextBlock, str]] = []
+        self.fails: list[tuple[float, TextBlock | None]] = []
+        self.shrunk_status: list[tuple[str, int]] = []
+        infl = max(2, int(3 * u))
+        for i, s in enumerate(self.states):
+            if s.action == "stain" and s.stain is not None:
+                cr, cc = s.stain.center
+                x0, y0, _, _ = self.rects[cr][cc]
+                self.stains.append({
+                    "t": s.t, "seconds": s.stain.seconds, "end": None,
+                    "pts": [(dx * self.pitch, dy * self.pitch)
+                            for dx, dy in stain_outline(s.stain.radius, self.seed, s.step)],
+                    "xy": (x0 + self.cell / 2, y0 + self.cell / 2)})
+            elif s.action == "clear_stain" and self.stains:
+                self.stains[-1]["end"] = s.t
+            elif s.action == "outline":
+                o = s.outlines[-1]
+                (ra, ca, rb, cb) = o.box
+                bx0, by0 = self.rects[ra][ca][0] - infl, self.rects[ra][ca][1] - infl
+                bx1, by1 = self.rects[rb][cb][2] - 1 + infl, self.rects[rb][cb][3] - 1 + infl
+                end = next((t.t for t in self.states[i + 1:] if t.action == "unmark"), math.inf)
+                item: dict[str, Any] = {"t": s.t, "end": end, "box": (bx0, by0, bx1, by1), "color": o.color,
+                                        "label": None}
+                if o.text:
+                    blk = ctx.block(o.text, "sans_bold", 30 * u * ctx.fs, (self.frame_box[2] - self.frame_box[0]) * 0.9,
+                                    align="center")
+                    padx, pady = int(18 * u), int(8 * u)
+                    pw, ph = blk.width + 2 * padx, blk.height + 2 * pady
+                    py = by0 - ph - 4 * u
+                    if py < self.frame_box[1]:   # no room above: put the label under the box
+                        py = by1 + 4 * u
+                    px = min(max((bx0 + bx1) / 2 - pw / 2, self.frame_box[0]), self.frame_box[2] - pw)
+                    item["label"] = (blk, (px, py, px + pw, py + ph), (padx, pady))
+                self.outlines.append(item)
+            elif s.action == "status":
+                blk = make_block(s.status, "sans_bold", 44 * u * ctx.fs, W - 2 * margin, max_h=self.band_h, min_size=14,
+                                 align="center")
+                if blk.shrunk:
+                    self.shrunk_status.append((s.status, blk.size))
+                self.status_times.append(s.t)
+                self.status_items.append((blk, s.status_color))
+            elif s.action == "fail":
+                text = str(self.steps[s.step].get("text") or "")
+                self.fails.append((s.t, ctx.block(text, "sans_bold", 48 * u * ctx.fs, block_w * 0.9, align="center")
+                                   if text else None))
+        self.end = self._steps_end()
+        if self.end > self.duration:
+            ctx.warn("a grid step ends after the scene does; lengthen the scene or move the steps earlier")
+
+    def _steps_end(self) -> float:
+        end = 0.0
+        for s in self.states[1:]:
+            step = self.steps[s.step]
+            if s.action == "reveal":
+                end = max(end, s.t + float(step.get("seconds", GRID_REVEAL_SECONDS)))
+            elif s.action == "stain" and s.stain is not None:
+                end = max(end, s.t + s.stain.seconds)
+            elif s.action == "clear_stain":
+                end = max(end, s.t + STAIN_FADE_SECONDS)
+            elif s.action == "lose":
+                end = max(end, s.t + LOSE_SECONDS)
+            elif s.action == "recover":
+                per = float(step.get("per_cell", GRID_PER_CELL))
+                end = max(end, s.t + (len(s.recovered) - 1) * per + RECOVER_SECONDS)
+            elif s.action == "fail":
+                end = max(end, s.t + (FAIL_TEXT_SECONDS if step.get("text") else FAIL_PULSE_SECONDS))
+        return end
+
+    def layout_warnings(self, caption: tuple[float, float, float, float] | None) -> list[str]:
+        out: list[str] = []
+        if self.pitch < MIN_CELL_PX * self.ctx.u:
+            out.append(f"grid cells are {self.pitch}px; use fewer rows or columns, or a shorter title")
+        if caption is not None:
+            fx0, fy0, fx1, fy1 = self.block
+            if caption[0] < fx1 and caption[2] > fx0 and caption[1] < fy1 and caption[3] > fy0:
+                out.append("the caption overlaps the grid; shorten the caption")
+        for text, size in self.shrunk_status:
+            out.append(f"grid status {text!r} shrunk to {size}px to fit")
+        return out
+
+    # --- geometry (also used by tests) ------------------------------------------------------------------
+
+    def cell_look(self, cell: Point, t: float) -> tuple[Color, float, float] | None:
+        """How a cell with events differs from its resting look at t: (fill, grow, hatch) with `grow` the extra
+        size as a fraction of the cell and `hatch` how far the lost hatching has come in. None: undisturbed."""
+        times = self.event_times.get(cell)
+        if not times:
+            return None
+        i = bisect.bisect_right(times, t) - 1
+        if i < 0:
+            return None
+        start, kind, dur = self.events[cell][i]
+        p = (t - start) / dur
+        base = self.base[cell]
+        if kind == "lose":
+            p = min(1.0, p)
+            return lerp_color(base, self.lost_fill, p), 0.0, p
+        if p >= 1.0:
+            return None
+        e = ease_out(p)
+        return lerp_color(self.ctx.theme.accent, base, e), 0.2 * (1.0 - e), 0.0
+
+    # --- drawing ------------------------------------------------------------------------------------------
+
+    def _draw_static(self, img: Image.Image) -> None:
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle(list(self.frame_box), int(18 * self.ctx.u), fill=self.frame_fill, outline=self.ctx.theme.line,
+                            width=max(1, int(2 * self.ctx.u)))
+        for r in range(self.rows):
+            for c in range(self.cols):
+                x0, y0, x1, y1 = self.rects[r][c]
+                d.rounded_rectangle([x0, y0, x1 - 1, y1 - 1], self.radius, fill=self.base[(r, c)])
+
+    def _paint(self, img: Image.Image, d: ImageDraw.ImageDraw, cell: Point, fill: Color, grow: float = 0.0,
+               hatch: float = 0.0) -> None:
+        x0, y0, x1, y1 = self.rects[cell[0]][cell[1]]
+        if grow > 0:
+            e = grow * self.cell / 2
+            d.rounded_rectangle([x0 - e, y0 - e, x1 - 1 + e, y1 - 1 + e], self.radius, fill=fill)
+        elif hatch >= 1.0:
+            img.paste(self.lost_tile, (x0, y0), self.cell_mask)
+        else:
+            d.rounded_rectangle([x0, y0, x1 - 1, y1 - 1], self.radius, fill=fill)
+            level = int(hatch * 8)
+            if level > 0:
+                mask = self._hatch_alpha.get(level)
+                if mask is None:
+                    mask = self._hatch_alpha[level] = self.hatch.point(lambda v: v * level // 8)
+                img.paste(self.ctx.theme.muted, (x0, y0), mask)
+
+    def _draw_cells(self, img: Image.Image, d: ImageDraw.ImageDraw, t: float) -> None:
+        if t >= self.first_event:
+            for cell in self.eventful:
+                look = self.cell_look(cell, t)
+                if look is not None:
+                    self._paint(img, d, cell, *look)
+        n = len(self.reveal_order)
+        shown = bisect.bisect_right(self.reveal_starts, t)   # cells whose reveal has begun
+        if shown >= n and t >= self.reveal_starts[-1] + self.reveal_fade:
+            return
+        bx0, by0, bx1, by1 = self.block
+        if shown == 0:
+            d.rectangle([bx0, by0, bx1 - 1, by1 - 1], fill=self.frame_fill)
+            return
+        if shown < n:
+            if self.reveal_mode == "sweep":
+                d.rectangle([bx0, self.rects[self.reveal_order[shown][0]][0][1], bx1 - 1, by1 - 1], fill=self.frame_fill)
+            else:
+                for r, c in self.reveal_order[shown:]:
+                    x0, y0, x1, y1 = self.rects[r][c]
+                    d.rectangle([x0, y0, x1 - 1, y1 - 1], fill=self.frame_fill)
+        done = bisect.bisect_right(self.reveal_starts, t - self.reveal_fade)
+        for cell in self.reveal_order[done:shown]:
+            look = self.cell_look(cell, t)
+            color = look[0] if look is not None else self.base[cell]
+            a = ease_out((t - self.reveal_start[cell]) / self.reveal_fade)
+            self._paint(img, d, cell, lerp_color(self.frame_fill, color, a))
+
+    def _draw_stains(self, img: Image.Image, t: float) -> None:
+        bx0, by0, bx1, by1 = self.block
+        for st in self.stains:
+            if t < st["t"]:
+                continue
+            alpha = 0.85
+            if st["end"] is not None and t >= st["end"]:
+                alpha *= 1.0 - (t - st["end"]) / STAIN_FADE_SECONDS
+            if alpha <= 0:
+                continue
+            k = ease_out((t - st["t"]) / st["seconds"])
+            cx, cy = st["xy"]
+            pts = [(cx + dx * k, cy + dy * k) for dx, dy in st["pts"]]
+            ix0, iy0 = max(bx0, int(min(p[0] for p in pts))), max(by0, int(min(p[1] for p in pts)))
+            ix1, iy1 = min(bx1, int(max(p[0] for p in pts)) + 1), min(by1, int(max(p[1] for p in pts)) + 1)
+            if ix1 <= ix0 or iy1 <= iy0:
+                continue
+            mask = Image.new("L", (ix1 - ix0, iy1 - iy0), 0)
+            ImageDraw.Draw(mask).polygon([(x - ix0, y - iy0) for x, y in pts], fill=int(255 * alpha))
+            img.paste(self.stain_color, (ix0, iy0), mask)
+
+    def _draw_outlines(self, img: Image.Image, d: ImageDraw.ImageDraw, t: float) -> None:
+        c, th, u = self.ctx, self.ctx.theme, self.ctx.u
+        for o in self.outlines:
+            a = _appear(t, o["t"], OUTLINE_SECONDS)
+            if o["end"] != math.inf:
+                a = min(a, 1.0 - _appear(t, o["end"], OUTLINE_SECONDS))
+            if a <= 0:
+                continue
+            color = _color(c, o["color"])
+            d.rounded_rectangle(list(o["box"]), self.radius, outline=lerp_color(self.frame_fill, color, a),
+                                width=max(2, int(4 * u)))
+            if o["label"] is not None:
+                blk, (x0, y0, x1, y1), (padx, pady) = o["label"]
+                d.rounded_rectangle([x0, y0, x1, y1], int((y1 - y0) / 2), fill=lerp_color(self.frame_fill, th.card, a),
+                                    outline=lerp_color(self.frame_fill, color, a), width=max(1, int(2 * u)))
+                blit(img, blk, (x0 + padx, y0 + pady), th.fg, a)
+
+    def _draw_status(self, img: Image.Image, t: float) -> None:
+        i = bisect.bisect_right(self.status_times, t) - 1
+        if i < 0:
+            return
+        c, u = self.ctx, self.ctx.u
+        p = (t - self.status_times[i]) / STATUS_SECONDS
+        blk, color = self.status_items[i]
+        blit(img, blk, (c.W / 2, self.band_cy + (1.0 - ease("back", p)) * 14 * u), _color(c, color), ease_out(p), "mc")
+        if i > 0 and p < 1.0:
+            old, old_color = self.status_items[i - 1]
+            blit(img, old, (c.W / 2, self.band_cy), _color(c, old_color), 1.0 - p, "mc")
+
+    def _draw_fail(self, img: Image.Image, d: ImageDraw.ImageDraw, t: float) -> None:
+        c, th, u = self.ctx, self.ctx.theme, self.ctx.u
+        for t0, blk in self.fails:
+            p = (t - t0) / FAIL_PULSE_SECONDS
+            if 0 <= p < 1:
+                d.rounded_rectangle(list(self.frame_box), int(18 * u), outline=lerp_color(th.line, th.accent, abs(math.sin(2 * math.pi * p))),
+                                    width=max(3, int(6 * u)))
+            if blk is not None and 0 <= t - t0 < FAIL_TEXT_SECONDS:
+                a = min(1.0, (t - t0) / 0.15, (t0 + FAIL_TEXT_SECONDS - t) / 0.2)
+                padx, pady = int(32 * u), int(16 * u)
+                cx, cy = (self.block[0] + self.block[2]) / 2, (self.block[1] + self.block[3]) / 2
+                w, h = blk.width + 2 * padx, blk.height + 2 * pady
+                d.rounded_rectangle([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], int(h / 2),
+                                    fill=lerp_color(self.frame_fill, th.card, a),
+                                    outline=lerp_color(self.frame_fill, th.accent, a), width=max(2, int(3 * u)))
+                blit(img, blk, (cx, cy), th.accent, a, "mc")
+
+    def frame(self, t: float) -> Image.Image:
+        th = self.ctx.theme
+        img = self.static_layer("grid", self._draw_static)
+        d = ImageDraw.Draw(img)
+        if self.title:
+            blit(img, self.title, self.title_xy, th.fg, _appear(t, 0.05), "tc")
+        self._draw_status(img, t)
+        self._draw_cells(img, d, t)
+        self._draw_stains(img, t)
+        self._draw_outlines(img, d, t)
+        self._draw_fail(img, d, t)
         return img
 
 

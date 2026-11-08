@@ -215,6 +215,8 @@ BASE_SCENES = {
              "path": [{"at": 1, "nodes": ["r", "a"]}]},
     "timeline": {"type": "timeline", "axis": {"from": 0, "to": 10, "ticks": 5}, "events": [{"x": 2}],
                  "window": [{"at": 1, "range": [0, 5]}]},
+    "grid": {"type": "grid", "cells": ["#.o", ".#."], "seed": 3,
+             "steps": [{"at": 0.5, "reveal": "pop"}, {"at": 2, "lose": [[0, 0]]}]},
     "cta": {"type": "cta", "question": "Which one?", "answers": ["x", "y"]},
 }
 

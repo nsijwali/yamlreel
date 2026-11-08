@@ -1,0 +1,33 @@
+# Grid demo: a QR code is stained, loses cells, and gets them back (reveal, outline, stain, lose, recover, fail).
+# Quote every row that starts with # : YAML reads an unquoted # as a comment.
+# Render: yamlreel render examples/grid-demo.yaml --out out --preview --no-voice --contact-frames 6
+meta:
+  title: Why a stained QR code still scans
+  tags: [qr, error-correction]
+theme: midnight
+formats: [vertical, landscape]
+music: {style: ambient, seed: 3}
+scenes:
+  - type: grid
+    title: Why a stained QR still scans
+    caption: Up to 30% can be lost
+    seconds: 14
+    seed: 7
+    cells: ["#######.#..#..#######", "#.....#..##.#.#.....#", "#.###.#.#.#...#.###.#",
+            "#.###.#..#..#.#.###.#", "#.###.#.##.#..#.###.#", "#.....#..#.##.#.....#",
+            "#######.#.#.#.#######", "........#.##.........", "#.##..#.#..#.o.oo..o.",
+            ".#..#..#.##.#.oo.o.oo", "##.#.##..#.##o..oo.o.", "..##...##..#..o.o.oo.",
+            "#..#.##.#.#..oo..o.oo", "........#..#.o.oo.o.o", "#######..#.#.oo.o..oo",
+            "#.....#.#..##.o.oo.o.", "#.###.#..##.#o.o..oo.", "#.###.#.#.#...oo.o.oo",
+            "#.###.#...#.#o..oo..o", "#.....#.#.##..o.o.oo.", "#######..#..#oo.o.o.o"]
+    steps:
+      - {at: 0.3, reveal: sweep, seconds: 1.2}
+      - {at: 2.0, outline: [0, 0, 6, 6], text: finder pattern}
+      - {at: 3.2, unmark: true}
+      - {at: 3.4, stain: [15, 16], radius: 4.5, seconds: 1.6}
+      - {at: 5.4, clear_stain: true}
+      - {at: 5.6, status: "Coffee 1 | Math 0", color: accent}
+      - {at: 6.2, fail: true, text: "Can't read?"}
+      - {at: 7.6, status: "Coffee 1 | Math 1", color: accent2}
+      - {at: 7.8, recover: all, per_cell: 0.06, order: random}
+      - {at: 12.5, status: Scanned, color: accent2}
