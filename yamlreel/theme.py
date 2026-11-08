@@ -37,6 +37,9 @@ THEMES: dict[str, Theme] = {
     # Neutral dark technical look for system design.
     "midnight": Theme("midnight", (11, 18, 32), (232, 238, 248), (140, 155, 180), (79, 157, 255),
                       (255, 196, 87), (22, 32, 54), (56, 72, 104), "sans", False),
+    # Cream, ink and burnt orange; every other colour is a blend of those three.
+    "editorial": Theme("editorial", (243, 238, 227), (17, 17, 17), (103, 101, 97), (217, 84, 30),
+                       (62, 61, 59), (249, 246, 238), (193, 189, 181), "serif", True),
 }
 
 _FONT_FILES = {

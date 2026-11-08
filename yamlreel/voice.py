@@ -13,6 +13,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import subprocess
+import tempfile
 import time
 import wave
 from dataclasses import dataclass
@@ -31,6 +33,12 @@ DEFAULT_URL = "http://127.0.0.1:3900/mcp/"
 LOADING_TRIES = 5  # a 503 means VoiceStudio is up but its model is still loading
 LOADING_BACKOFF = 3.0  # seconds before the second try; each wait is 1.5x the one before
 NARRATION_LEAD = 0.3  # seconds of silence between a scene's start and its narration
+MIN_SPEED, MAX_SPEED = 0.8, 1.3  # voiceover.speed
+TRIM_FRAME = 0.02  # seconds per frame when looking for silence
+TRIM_DB = 40.0  # quiet means this far under the clip's own loudest frame
+TRIM_PAD = 0.03  # seconds of quiet kept next to speech so word edges are not clipped
+TRIM_MAX_GAP = 0.3  # an inner quiet gap longer than this is shortened ...
+TRIM_KEEP_GAP = 0.15  # ... to this
 CACHE_KEY_VERSION = 2  # bump when what a cached clip depends on changes; old files are then never read
 
 
@@ -198,6 +206,71 @@ def write_wav(path: Path, samples: np.ndarray) -> Path:
     return path
 
 
+def trim_silence(samples: np.ndarray, speed: float = 1.0) -> np.ndarray:
+    """Cut leading and trailing silence and shorten inner gaps longer than TRIM_MAX_GAP to TRIM_KEEP_GAP.
+
+    `speed` is the speed-up applied afterwards: gaps are kept `speed` times longer, so that they are still
+    TRIM_KEEP_GAP long once the clip has been sped up (the subtitles need that much pause to see a sentence end).
+
+    Quiet is measured against the clip's own loudest 20 ms frame, so quiet and loud voices both work. A clip
+    with no speech-level frame is returned as it came."""
+    frame = int(TRIM_FRAME * SAMPLE_RATE)
+    n = -(-len(samples) // frame)
+    if n == 0:
+        return samples
+    padded = np.zeros(n * frame, dtype=np.float32)
+    padded[: len(samples)] = samples
+    rms = np.sqrt((padded.reshape(n, frame) ** 2).mean(axis=1))
+    peak = float(rms.max())
+    if peak <= 0:
+        return samples
+    loud = np.flatnonzero(rms > peak * 10 ** (-TRIM_DB / 20))
+    pad = int(TRIM_PAD * SAMPLE_RATE)
+    start = max(0, int(loud[0]) * frame - pad)
+    end = min(len(samples), (int(loud[-1]) + 1) * frame + pad)
+    keep = int(TRIM_KEEP_GAP * max(speed, 1.0) / 2 * SAMPLE_RATE)
+    pieces: list[np.ndarray] = []
+    at = start
+    for a, b in zip(loud[:-1], loud[1:]):  # the quiet run lies between two consecutive loud frames
+        gap_a, gap_b = (int(a) + 1) * frame, int(b) * frame
+        if gap_b - gap_a > TRIM_MAX_GAP * SAMPLE_RATE:
+            pieces.append(samples[at:gap_a + keep])
+            at = gap_b - keep
+    pieces.append(samples[at:end])
+    return np.concatenate(pieces)
+
+
+def change_speed(samples: np.ndarray, speed: float) -> np.ndarray:
+    """Play the clip `speed` times as fast without changing its pitch (ffmpeg `atempo`)."""
+    from . import render  # late: render imports this module
+    ffmpeg = render.ffmpeg_exe()
+    if ffmpeg is None:
+        raise VoiceError("voiceover.speed needs ffmpeg and none was found. Install it (macOS: brew install ffmpeg; "
+                         "Debian/Ubuntu: sudo apt install ffmpeg) or run: pip install imageio-ffmpeg")
+    with tempfile.TemporaryDirectory(prefix="yamlreel-speed-") as td:
+        src, dst = Path(td) / "in.wav", Path(td) / "out.wav"
+        write_wav(src, samples)
+        cmd = [ffmpeg, "-loglevel", "error", "-y", "-i", str(src), "-filter:a", f"atempo={speed:.4f}",
+               "-ar", str(SAMPLE_RATE), "-ac", "1", str(dst)]
+        try:
+            done = subprocess.run(cmd, capture_output=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise VoiceError(f"cannot run ffmpeg at {ffmpeg} for voiceover.speed: {e}") from e
+        if done.returncode != 0:
+            raise VoiceError("ffmpeg failed on voiceover.speed:\n" + done.stderr.decode(errors="replace")[-500:])
+        return read_wav(dst)
+
+
+def process_clip(samples: np.ndarray, vo: dict[str, Any]) -> np.ndarray:
+    """Apply voiceover.trim, then voiceover.speed. A 1.0 speed leaves the audio alone and needs no ffmpeg."""
+    speed = float(vo.get("speed", 1.0))
+    if vo.get("trim") and len(samples):
+        samples = trim_silence(samples, speed)
+    if speed != 1.0 and len(samples):
+        samples = change_speed(samples, speed)
+    return samples
+
+
 def _sentence(t: str) -> str:
     t = " ".join(str(t).split())
     return t if not t or t[-1] in ".!?:;" else t + "."
@@ -299,6 +372,7 @@ def prepare_narration(spec: dict[str, Any], server: VoiceServer | None, cache: P
             samples = read_wav(cached)
         else:
             continue
+        samples = process_clip(samples, vo)  # after the cache, so the cached audio stays raw
         clips[i] = samples
         sc["seconds"] = max(sc["seconds"], min_scene_seconds(samples, gap))
     return clips

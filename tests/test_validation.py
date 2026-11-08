@@ -239,7 +239,7 @@ def test_type_confusion_top_level_keys(value):
         outcome({"scenes": [TITLE], "poster": {key: value}})
     for key in HARD_LIMITS:
         outcome({"scenes": [TITLE], "limits": {key: value}})
-    for key in ("voice", "language", "gap", "music_level", "read_screen"):
+    for key in ("voice", "language", "gap", "music_level", "read_screen", "speed", "trim"):
         outcome({"scenes": [TITLE], "voiceover": {key: value}})
     for key in ("text", "image", "position", "opacity", "size"):
         outcome({"scenes": [TITLE], "watermark": {"text": "x", key: value}})
