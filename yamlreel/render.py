@@ -153,6 +153,15 @@ class Timeline:
             if wx < bx1 and wx + rgb.width > bx0 and wy < by1 and wy + rgb.height > by0:
                 self.ctx.warn("the watermark overlaps the step badge at the top; move it with watermark.position "
                               "or make it smaller")
+        for i, sc in enumerate(self.scenes):
+            if sc.kicker is not None and sc.kicker.shrunk:
+                self.ctx.warn(f"scenes[{i}]: kicker shrunk to {sc.kicker.size}px to fit; shorten it")
+            badge = self._badges.get(i)
+            if sc.kicker_box is not None and badge is not None:
+                kx0, ky0, kx1, ky1 = sc.kicker_box
+                bx0, by0, bx1, by1 = badge.box
+                if kx0 < bx1 and kx1 > bx0 and ky0 < by1 and ky1 > by0:
+                    self.ctx.warn(f"scenes[{i}]: the kicker overlaps the step badge; drop one of them")
 
     def _make_watermark(self, wm: dict[str, Any] | None) -> tuple[Image.Image, Image.Image, tuple[int, int]] | None:
         """Pre-render the watermark once: (rgb, mask, top-left position)."""
