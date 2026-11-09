@@ -236,12 +236,12 @@ def load_recogniser(model: str) -> Recognise:
         nonlocal loaded
         try:
             if loaded is None:
-                loaded = faster_whisper.WhisperModel(model, device="cpu", compute_type="int8")  # verify against faster-whisper 1.x
+                loaded = faster_whisper.WhisperModel(model, device="cpu", compute_type="int8")
             # No initial_prompt: the expected text would bias the result towards what we want to check.
-            segments, _info = loaded.transcribe(  # verify against faster-whisper 1.x
-                str(path), language="en", beam_size=5, temperature=0.0,  # verify against faster-whisper 1.x
-                condition_on_previous_text=False, vad_filter=False)  # verify against faster-whisper 1.x
-            return " ".join(s.text.strip() for s in segments).strip()  # segment.text: verify against faster-whisper 1.x
+            segments, _info = loaded.transcribe(
+                str(path), language="en", beam_size=5, temperature=0.0,
+                condition_on_previous_text=False, vad_filter=False)
+            return " ".join(s.text.strip() for s in segments).strip()  # segment.text
         except Exception as e:  # the model may fail to download, load or decode in many ways
             raise VoiceError(f"cannot transcribe with the speech model {model!r}: {e}") from e
 

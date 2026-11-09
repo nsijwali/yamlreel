@@ -92,7 +92,7 @@ yamlreel render cache-stampede-45s.yaml --no-voice
 - **ffmpeg:** yamlreel uses the `ffmpeg` on your PATH if there is one, and otherwise the copy that the `[ffmpeg]` extra (the `imageio-ffmpeg` package) brings along. You only need one of them.
 - **Fonts:** yamlreel looks in your `font_dir` setting (or `YAMLREEL_FONT_DIR`) first, then the system font folders, then your own (`~/Library/Fonts` on macOS, `%LOCALAPPDATA%\Microsoft\Windows\Fonts` on Windows). If your fonts live anywhere else, point `font_dir` at that folder. Japanese text uses Noto CJK when it is installed.
 - **Web captures** are only needed for `shot` scenes that screenshot a URL. `chromium_path` in your user config (or `YAMLREEL_CHROMIUM`) picks a different browser.
-- **Voice check** is only needed for `yamlreel check-voice` ([Checking the voice](#checking-the-voice)). The `[verify]` extra installs `faster-whisper`; the first run downloads a speech model (about 145 MB).
+- **Voice check** is only needed for `yamlreel check-voice` ([Checking the voice](#checking-the-voice)). The `[verify]` extra installs `faster-whisper` and pins PyAV below 17 (PyAV 19 removed an argument that faster-whisper 1.2.1 still passes); the first run downloads a speech model (about 145 MB).
 - **Windows** is not covered by CI yet. Reports are welcome.
 
 </details>
