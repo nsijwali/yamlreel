@@ -6,8 +6,8 @@ authors:
   - given-names: Nitin
     family-names: Sijwali
     alias: nsijwali
-version: 0.3.1
-date-released: 2026-11-03
+version: 0.3.2
+date-released: 2026-11-09
 license: MIT
 repository-code: "https://github.com/nsijwali/yamlreel"
 url: "https://nsijwali.github.io/yamlreel/"
