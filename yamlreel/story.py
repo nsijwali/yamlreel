@@ -15,6 +15,7 @@ from typing import Any
 import yaml
 
 from .config import Config
+from .datascenes import MAX_CELL_CHARS
 from .scenes import SCENE_TYPES
 from .specs import DEFAULT_SECONDS, MAX_SPEC_BYTES, SpecError, validate
 from .theme import get_theme
@@ -31,10 +32,16 @@ MAX_WHEN_ENTRY = 120
 MAX_QUESTION = 200
 MAX_ANSWER = 60
 MAX_ANSWERS = 4
+MAX_EVENTS = 8                 # timed cues in one step
+MAX_EVENT_AT = 60              # seconds from the scene's start
+EVENT_HOLD = 1.5               # seconds the scene lasts after its last event
+EVENT_SHOWS = ("diagram", "meter", "array")
+METER_LEVELS = (4, 10)         # the placeholder's drain and refill, which events alternate between
 TODO = "TODO"
 
 OUTLINE_KEYS = ("topic", "hook", "problem", "steps", "when_to_use", "question", "answers")
-STEP_KEYS = ("name", "say", "show")
+STEP_KEYS = ("name", "say", "show", "events")
+EVENT_KEYS = ("at", "text")
 DEFAULT_SHOW = "bullets"
 
 
@@ -87,6 +94,30 @@ def _mapping(path: str, v: Any, allowed: tuple[str, ...], what: str) -> dict[str
     return v
 
 
+def _events(path: str, raw: Any) -> list[dict[str, Any]]:
+    """[{at, text}] for a step's `events`, or [] when there are none (`events: []` is the same as no events)."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise StoryError(f"{path} must be a list")
+    if len(raw) > MAX_EVENTS:
+        raise StoryError(f"{path} has {len(raw)} entries; the limit is {MAX_EVENTS}")
+    out: list[dict[str, Any]] = []
+    for n, ev in enumerate(raw):
+        where = f"{path}[{n}]"
+        ev = _mapping(where, ev, EVENT_KEYS, "an event")
+        for key in EVENT_KEYS:
+            if key not in ev:
+                raise StoryError(f"{where} needs '{key}'")
+        at = ev["at"]
+        if isinstance(at, bool) or not isinstance(at, (int, float)) or not 0 <= at <= MAX_EVENT_AT:
+            raise StoryError(f"{where}.at must be a number from 0 to {MAX_EVENT_AT}")
+        if out and at < out[-1]["at"]:
+            raise StoryError(f"{where}.at must not be earlier than the event before it")
+        out.append({"at": at, "text": _text(f"{where}.text", ev["text"], MAX_CELL_CHARS)})
+    return out
+
+
 def parse_outline(raw: Any) -> dict[str, Any]:
     """The checked outline: every key present, text normalised. Unknown keys and out-of-range values are errors."""
     outline = _mapping("", raw, OUTLINE_KEYS, "an outline")
@@ -113,9 +144,12 @@ def parse_outline(raw: Any) -> dict[str, Any]:
         show = st.get("show", DEFAULT_SHOW)
         if not isinstance(show, str) or show not in PLACEHOLDERS:
             raise StoryError(f"{path}.show must be one of {', '.join(PLACEHOLDERS)}")
+        events = _events(f"{path}.events", st.get("events"))
+        if events and show not in EVENT_SHOWS:
+            raise StoryError(f"{path}.events: events work with show: diagram, meter or array; this step shows {show}")
         out["steps"].append({"name": _text(f"{path}.name", st["name"], MAX_NAME),
                              "say": _text(f"{path}.say", st["say"], MAX_LINE) if st.get("say") is not None else "",
-                             "show": show})
+                             "show": show, "events": events})
     names = [s["name"] for s in out["steps"]]
     if len(set(names)) != len(names):
         raise StoryError("steps: names must be different, because each one is a badge label")
@@ -178,7 +212,17 @@ def _supports() -> tuple[bool, bool]:
     return ok({"scene": {"energy": "mid"}}), ok({"top": {"voiceover": {"duck": True}}})
 
 
-def _step_scene(step: dict[str, str]) -> dict[str, Any]:
+def _apply_events(sc: dict[str, Any], kind: str, events: list[dict[str, Any]]) -> None:
+    """Turn a step's events into the cues of its scene (diagram flash, meter steps, array steps)."""
+    if kind == "diagram":
+        sc["flash"] = [{"node": "a", **ev} for ev in events]
+    elif kind == "meter":
+        sc["steps"] = [{"at": ev["at"], "level": METER_LEVELS[n % 2], "text": ev["text"]} for n, ev in enumerate(events)]
+    else:
+        sc["steps"] = [{"at": ev["at"], "mark": [n % 3], "text": ev["text"]} for n, ev in enumerate(events)]
+
+
+def _step_scene(step: dict[str, Any]) -> dict[str, Any]:
     kind = step["show"]
     sc: dict[str, Any] = {"type": kind}
     cls = SCENE_TYPES[kind]
@@ -188,10 +232,15 @@ def _step_scene(step: dict[str, str]) -> dict[str, Any]:
     elif kind == "stat":
         sc["label"] = step["name"]
     sc.update(fields)
+    events = step.get("events") or []
+    if events:
+        _apply_events(sc, kind, events)
     sc["step"] = step["name"]
     if step["say"]:
         sc["narration"] = step["say"]
     sc["seconds"] = narrated_seconds(kind, step["say"])
+    if events:   # beat snapping can shorten a scene, so keep the last cue on screen for a moment
+        sc["seconds"] = max(sc["seconds"], events[-1]["at"] + EVENT_HOLD)
     return sc
 
 

@@ -1,4 +1,4 @@
-"""Command line interface: yamlreel render|validate|init|story|config|music."""
+"""Command line interface: yamlreel render|validate|check-voice|init|story|config|music."""
 from __future__ import annotations
 
 import argparse
@@ -14,10 +14,11 @@ from . import music as music_mod
 from . import story as story_mod
 from . import subtitles as subs_mod
 from . import voice as voice_mod
+from . import voicecheck
 from .config import CONFIG_FILENAME, config_base, Config, ConfigError, load_config, user_config_path
 from .voice import VoiceError, VoiceServer
 from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, render, share_copy
-from .safety import UnsafeInput
+from .safety import UnsafeInput, resolve_local
 from .shots import CaptureError
 from .specs import FORMATS, MUSIC_STYLES, SpecError, check_frame_budget, load_spec
 from .theme import FontError, set_font_dirs
@@ -110,6 +111,33 @@ def cmd_render(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check_voice(args: argparse.Namespace) -> int:
+    """Exit 0 clean (notes only), 1 for an ERROR or WARNING, 2 for a setup problem."""
+    try:
+        recognise = voicecheck.load_recogniser(args.model)   # first: nothing else matters without it
+        cfg = _config(args)
+        spec = load_spec(args.spec, cfg)
+        if args.read_screen:
+            spec["voiceover"] = {**spec["voiceover"], "read_screen": True}
+        cache = (Path(args.out) if args.out else _confined_output_dir(spec, cfg)) / ".cache"
+        rt = _runtime(spec, cfg)
+        findings = voicecheck.check_spec(spec, rt.voice, cache,
+                                         lambda p: resolve_local(p, Path(spec.get("_dir", ".")), rt.roots), recognise)
+    except (SpecError, ConfigError, UnsafeInput, VoiceError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except SystemExit as e:  # _confined_output_dir
+        print(e.code, file=sys.stderr)
+        return 2
+    for f in findings:
+        print(f.line())
+    errors = sum(f.level == "ERROR" for f in findings)
+    warnings = sum(f.level == "WARNING" for f in findings)
+    print(f"checked {findings.checked} of {findings.narrated} narrated scenes: "
+          f"{errors} error{'s' * (errors != 1)}, {warnings} warning{'s' * (warnings != 1)}")
+    return 1 if errors or warnings else 0
+
+
 def _copy_template(name: str, dest: Path, force: bool) -> int:
     if dest.exists() and not force:
         print(f"{dest} exists; pass --force to overwrite", file=sys.stderr)
@@ -200,6 +228,13 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--contact-frames", type=int, metavar="N",
                    help="stills per scene on the contact sheet, 1-8 (default: 2); one row per scene")
     r.set_defaults(fn=cmd_render)
+    cv = sub.add_parser("check-voice", parents=[common],
+                        help="transcribe the cached narration clips and compare them with the narration text")
+    cv.add_argument("spec")
+    cv.add_argument("--out", help="the output folder used by render; its .cache holds the clips (default: output_dir from config)")
+    cv.add_argument("--model", default=voicecheck.DEFAULT_MODEL,
+                    help=f"faster-whisper model name or a local model path (default: {voicecheck.DEFAULT_MODEL})")
+    cv.set_defaults(fn=cmd_check_voice)
     i = sub.add_parser("init", help="write a starter spec")
     i.add_argument("template", help=f"one of: {', '.join(_templates())}")
     i.add_argument("dest")

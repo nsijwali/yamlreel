@@ -39,6 +39,7 @@ Changelog = "https://github.com/nsijwali/yamlreel/releases"
 [project.optional-dependencies]
 capture = ["playwright>=1.40"]
 ffmpeg = ["imageio-ffmpeg>=0.5"]
+verify = ["faster-whisper>=1.0"]
 dev = ["pytest>=7"]
 
 [project.scripts]
