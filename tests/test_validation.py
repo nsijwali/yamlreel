@@ -129,6 +129,13 @@ def spec_file(tmp_path: Path, body: str, name: str = "s.yaml") -> Path:
     return p
 
 
+def after_location(line: str, f: Path) -> str:
+    """The message of an `error: <file>:<line>: <message>` line; fails if the location is missing."""
+    m = re.match(rf"error: {re.escape(str(f))}:\d+: (.*)", line)
+    assert m, line
+    return m.group(1)
+
+
 def cli_error(capsys, *argv) -> list[str]:
     """Run the CLI, expect exit 1, and return the stderr lines."""
     assert main(list(argv)) == 1
@@ -156,7 +163,7 @@ def test_reproductions_raise_spec_error_with_the_path(extra, expected):
 def test_cli_validate_prints_one_error_line_and_exits_1(tmp_path, capsys, extra, expected):
     f = spec_file(tmp_path, yaml.safe_dump({"scenes": [TITLE], **extra}))
     lines = cli_error(capsys, "validate", str(f))
-    assert len(lines) == 1 and lines[0].startswith("error: " + expected)
+    assert len(lines) == 1 and after_location(lines[0], f).startswith(expected)
 
 
 def test_other_reported_crashes_are_spec_errors():
@@ -626,15 +633,16 @@ def test_an_alias_bomb_gives_a_short_error_fast(tmp_path, capsys):
     lines = cli_error(capsys, "validate", str(f))
     assert time.monotonic() - start < 1.0
     assert len(lines) == 1 and len(lines[0]) < 300
-    assert lines[0].startswith("error: scenes[0].type: unknown type list; choose from")
+    assert after_location(lines[0], f).startswith("scenes[0].type: unknown type list; choose from")
 
 
 def test_a_huge_string_value_gives_a_short_error(tmp_path, capsys):
     big = "x" * 900_000
-    for body, prefix in ((f"scenes:\n  - {{type: {big}, title: x}}\n", "error: scenes[0].type: unknown type 'xxxx"),
-                         (f"theme: {big}\nscenes:\n  - {{type: title, title: x}}\n", "error: theme must be printable text")):
-        lines = cli_error(capsys, "validate", str(spec_file(tmp_path, body)))
-        assert len(lines) == 1 and len(lines[0]) < 300 and lines[0].startswith(prefix)
+    for body, prefix in ((f"scenes:\n  - {{type: {big}, title: x}}\n", "scenes[0].type: unknown type 'xxxx"),
+                         (f"theme: {big}\nscenes:\n  - {{type: title, title: x}}\n", "theme must be printable text")):
+        f = spec_file(tmp_path, body)
+        lines = cli_error(capsys, "validate", str(f))
+        assert len(lines) == 1 and len(lines[0]) < 300 + len(str(f)) and after_location(lines[0], f).startswith(prefix)
 
 
 def test_theme_names_are_one_short_printable_line():

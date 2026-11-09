@@ -20,6 +20,7 @@ from .datascenes import ARRAY_ACTIONS, MAX_CELL_CHARS
 from .scenes import SCENE_TYPES
 from .specs import DEFAULT_SECONDS, MAX_SPEC_BYTES, SpecError, validate
 from .theme import get_theme
+from .yamlpos import LocatedError
 
 MIN_STEPS = 1
 MAX_STEPS = 6
@@ -50,7 +51,7 @@ EVENT_EXTRAS: dict[str, tuple[str, ...]] = {"array": ("text", "color"), "meter":
 DEFAULT_SHOW = "bullets"
 
 
-class StoryError(ValueError):
+class StoryError(LocatedError):
     pass
 
 
@@ -226,7 +227,11 @@ def load_outline(path: str | Path) -> dict[str, Any]:
         raw = yaml.safe_load(text)
     except (yaml.YAMLError, ValueError, RecursionError) as e:
         raise StoryError(f"cannot parse outline {p}: {' '.join(str(e).split())[:200]}") from e
-    return parse_outline(raw)
+    try:
+        return parse_outline(raw)
+    except StoryError as e:
+        e.attach(path, text)
+        raise
 
 
 # --- the spec --------------------------------------------------------------------------------------------

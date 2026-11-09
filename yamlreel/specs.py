@@ -30,6 +30,7 @@ from .scenes import SCENE_TYPES, DiagramScene, Scene
 from .textkit import MAX_COUNT_MAGNITUDE, split_count
 from .theme import get_theme
 from .voice import MAX_SPEED, MIN_SPEED
+from .yamlpos import LocatedError, has_path, leading_path
 
 FORMATS = {"landscape": (1920, 1080), "vertical": (1080, 1920), "square": (1080, 1080)}
 
@@ -86,8 +87,8 @@ NODE_SIZE = (16, 120)
 MAX_FRAMES = 216_000
 
 
-class SpecError(ValueError):
-    pass
+class SpecError(LocatedError):
+    OPAQUE = frozenset({"meta.tags", "meta.links", "meta.credits"})   # config entries come first: indices differ
 
 
 def suggest(key: str, allowed: Iterable[str]) -> str | None:
@@ -114,6 +115,19 @@ def _no_unknown(path: str, raw: dict[Any, Any], allowed: Iterable[str], what: st
             raise _unknown_key(path, key, allowed, what)
 
 
+def _from_spec_file(msg: str, raw: Any, cfg: Config) -> bool:
+    """False when the error's value came only from the config, so a line in the spec would blame the wrong place.
+    A path in neither (a missing required field, a default) keeps the nearest spec line."""
+    path = leading_path(msg)
+    if not path or not isinstance(raw, dict):
+        return True
+    layer = dict(raw)   # the shorthands the merge expands: `music: koto`, `transition: slide`
+    normalize_music(layer)
+    if isinstance(layer.get("transition"), str):
+        layer["transition"] = {"type": layer["transition"]}
+    return has_path(layer, path) or not has_path(cfg.data, path)
+
+
 def load_spec(path: str | Path, config: Config | None = None) -> dict[str, Any]:
     p = Path(path)
     cfg = config or Config()
@@ -132,7 +146,12 @@ def load_spec(path: str | Path, config: Config | None = None) -> dict[str, Any]:
         raise SpecError(f"cannot parse spec {p}: {_yaml_problem(e)}") from e
     except (ValueError, RecursionError) as e:  # an impossible date, or nesting deeper than the parser allows
         raise SpecError(f"cannot parse spec {p}: {' '.join(str(e).split()) or 'nested too deeply'}") from e
-    spec = validate(raw, cfg, base_dir=p.resolve().parent)
+    try:
+        spec = validate(raw, cfg, base_dir=p.resolve().parent)
+    except SpecError as e:
+        if _from_spec_file(str(e), raw, cfg):
+            e.attach(path, text)
+        raise
     spec["_dir"] = str(p.resolve().parent)
     return spec
 
