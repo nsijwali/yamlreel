@@ -1,6 +1,8 @@
 """S4: the step badge, the cta end card, the share-copy question and `yamlreel story`."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import yaml
 from PIL import Image, ImageChops
@@ -413,9 +415,9 @@ def test_event_validation():
             story.parse_outline(_outline("meter", events))
     bad("x", "must be a list")
     bad([1], "must be a mapping")
-    bad([{"at": 1}], "needs 'text'")
+    bad([{"at": 1}], "needs 'text', or one of level")
     bad([{"text": "x"}], "needs 'at'")
-    bad([{"at": 1, "text": "x", "level": 3}], "unknown field")
+    bad([{"at": 1, "text": "x", "mark": [0]}], "unknown field")
     bad([{"at": -1, "text": "x"}], "from 0 to 60")
     bad([{"at": 61, "text": "x"}], "from 0 to 60")
     bad([{"at": "1", "text": "x"}], "from 0 to 60")
@@ -433,3 +435,110 @@ def test_events_lengthen_the_scene_to_hold_the_last_cue():
     long_say = " ".join(["word"] * 40)
     assert _step_scene("meter", [{"at": 9, "text": "x"}], say=long_say)["seconds"] == story.narrated_seconds("meter", long_say)
     assert _step_scene("meter", [])["seconds"] == story.narrated_seconds("meter", "Short.")
+
+
+# --- events: the real step fields pass through ------------------------------------------------------------
+
+def _gen_steps(show, events):
+    return _step_scene(show, events)
+
+
+def test_old_form_events_give_the_same_spec_as_before():
+    outline = {"topic": "Queues", "hook": "A queue absorbs bursts.", "steps": [
+        {"name": "Meter", "say": "Short.", "show": "meter",
+         "events": [{"at": 1.0, "text": "Burst arrives"}, {"at": 3.5, "text": "Queue full"}, {"at": 5, "text": "Drained"}]},
+        {"name": "Array", "say": "Short.", "show": "array",
+         "events": [{"at": 1, "text": "One"}, {"at": 2, "text": "Two"}, {"at": 3, "text": "Three"}, {"at": 4, "text": "Four"}]},
+        {"name": "Flow", "say": "Short.", "show": "diagram", "events": [{"at": 1, "text": "Go"}, {"at": 2, "text": "Stop"}]}]}
+    golden = (Path(__file__).parent / "golden" / "story_events_old_form.yaml").read_text(encoding="utf-8")
+    assert story.generate(story.parse_outline(outline), "golden.yaml") == golden
+
+
+def test_array_events_pass_the_step_fields_through():
+    events = [{"at": 1, "push": "x"},
+              {"at": 2, "mark": [0, 1], "text": "Front two", "color": "accent"},
+              {"at": 3, "window": [0, 1]}, {"at": 4, "unmark": True}, {"at": 5, "insert": "y"},
+              {"at": 6, "pop": "back"}]
+    sc = _gen_steps("array", events)
+    assert sc["steps"] == events
+    assert sc["seconds"] == story.narrated_seconds("array", "Short.")   # the last cue is well inside it
+
+
+def test_meter_events_pass_the_step_fields_through():
+    events = [{"at": 1, "level": 7, "seconds": 0.5, "text": "Half", "color": "accent2"}, {"at": 2, "level": 0}]
+    assert _gen_steps("meter", events)["steps"] == events
+
+
+def test_diagram_events_pass_the_node_through():
+    sc = _gen_steps("diagram", [{"at": 1, "flash": "b", "text": "Hit", "color": "accent"}, {"at": 2, "flash": "a", "text": "Back"}])
+    assert sc["flash"] == [{"node": "b", "at": 1, "text": "Hit", "color": "accent"}, {"node": "a", "at": 2, "text": "Back"}]
+
+
+def test_each_event_form_alone_still_works_in_every_show():
+    assert [s["level"] for s in _gen_steps("meter", [{"at": 1, "text": "a"}, {"at": 2, "text": "b"}])["steps"]] == [4, 10]
+    assert [s["level"] for s in _gen_steps("meter", [{"at": 1, "level": 3}, {"at": 2, "level": 5}])["steps"]] == [3, 5]
+    assert [s["mark"] for s in _gen_steps("array", [{"at": 1, "text": "a"}, {"at": 2, "text": "b"}])["steps"]] == [[0], [1]]
+    assert len(_gen_steps("array", [{"at": 1, "pop": "back"}, {"at": 2, "push": "x"}])["steps"]) == 2
+    assert _gen_steps("diagram", [{"at": 1, "text": "a"}])["flash"][0]["node"] == "a"
+    assert _gen_steps("diagram", [{"at": 1, "flash": "b", "text": "a"}])["flash"][0]["node"] == "b"
+
+
+@pytest.mark.parametrize("show,old,new", [
+    ("array", {"at": 3, "text": "x"}, {"at": 1, "pop": "back"}),
+    ("meter", {"at": 3, "text": "x"}, {"at": 1, "level": 3}),
+    ("diagram", {"at": 3, "text": "x"}, {"at": 1, "flash": "b", "text": "y"}),
+])
+def test_mixing_the_two_event_forms_in_one_step_is_an_error(show, old, new):
+    _bad(show, [{**new, "at": 1}, {**new, "at": 2}, old], r"steps\[0\]\.events: use one form per step")
+    _bad(show, [{**old, "at": 1}, {**new, "at": 2}], r"steps\[0\]\.events: use one form per step")
+
+
+def test_pop_pop_then_old_form_text_names_the_mix_not_a_mark_index():
+    _bad("array", [{"at": 1, "pop": "back"}, {"at": 2, "pop": "back"}, {"at": 3, "text": "x"}], r"use one form per step")
+
+
+def test_a_meter_ramp_that_outlasts_the_last_cue_holds_the_scene():
+    sc = _step_scene("meter", [{"at": 8, "level": 0, "seconds": 20, "text": "drain"}])
+    assert sc["seconds"] == 29.5
+    sc = _step_scene("meter", [{"at": 1, "level": 0, "seconds": 20}, {"at": 5, "level": 8, "seconds": 1}])
+    assert sc["seconds"] == 22.5          # the earlier, longer ramp ends last
+    assert _step_scene("meter", [{"at": 10, "level": 0, "text": "x"}])["seconds"] == 11.5
+
+
+def test_a_flash_before_its_generated_node_appears_is_an_error():
+    _bad("diagram", [{"at": 0.5, "flash": "b", "text": "x"}], r"steps\[0\]\.events\[0\]\.at: node 'b'.*appears at 0\.8s")
+    assert _gen_steps("diagram", [{"at": 0, "flash": "a", "text": "x"}, {"at": 0.8, "flash": "b", "text": "x"}])
+
+
+def test_scene_level_flash_before_an_explicit_node_time_is_an_error():
+    sc = {"type": "diagram", "nodes": [{"id": "a", "label": "A", "x": 0.2, "y": 0.5},
+                                       {"id": "b", "label": "B", "x": 0.8, "y": 0.5, "at": 2}],
+          "flash": [{"node": "b", "at": 1, "text": "early"}]}
+    with pytest.raises(SpecError, match=r"flash\[0\]\.at: node 'b' appears at 2.0s"):
+        validate({"scenes": [sc]}, Config())
+    sc["flash"] = [{"node": "b", "at": 2, "text": "ok"}, {"node": "a", "at": 0, "text": "ok"}]
+    validate({"scenes": [sc]}, Config())
+
+
+def _bad(show, events, match):
+    with pytest.raises(story.StoryError, match=match):
+        story.generate(story.parse_outline(_outline(show, events)))
+
+
+def test_mixed_or_unknown_event_keys_name_the_allowed_ones():
+    _bad("array", [{"at": 1, "push": "x", "pop": "back"}], r"steps\[0\]\.events\[0\]: an event takes at most one of insert, push")
+    _bad("array", [{"at": 1, "push": "x", "level": 3}], r"events\[0\]\.level: unknown field for an array event; allowed: at, color, insert, mark, pop, push, text, unmark, window")
+    _bad("meter", [{"at": 1, "text": "x", "mark": [0]}], r"events\[0\]\.mark: unknown field for a meter event; allowed: at, color, level, seconds, text")
+    _bad("meter", [{"at": 1, "text": "x", "color": "accent"}], r"events\[0\]\.color: needs one of level \(or only at and text\); allowed: at, color, level, seconds, text")
+    _bad("diagram", [{"at": 1, "flash": "a"}], r"events\[0\] needs 'text'")
+    _bad("diagram", [{"at": 1, "flash": "a", "text": "x", "level": 3}], r"unknown field for a diagram event; allowed: at, color, flash, text")
+
+
+def test_impossible_pass_through_states_name_the_outline_path():
+    _bad("array", [{"at": 1, "push": "x"}, {"at": 2, "pop": "back"}, {"at": 3, "pop": "back"}, {"at": 4, "pop": "back"},
+                   {"at": 5, "pop": "back"}, {"at": 6, "pop": "back"}], r"steps\[0\]\.events\[5\]")
+    _bad("array", [{"at": 1, "mark": [5]}], r"steps\[0\]\.events\[0\]\.mark: index 5 is outside")
+    _bad("array", [{"at": 1, "push": "x", "text": "no"}], r"steps\[0\]\.events\[0\]\.text: only a mark or window step")
+    _bad("meter", [{"at": 1, "level": 99}], r"steps\[0\]\.events\[0\]\.level must be a number between 0 and 10")
+    _bad("diagram", [{"at": 1, "flash": "zzz", "text": "x"}],
+         r"steps\[0\]\.events\[0\]\.flash: unknown node 'zzz'; the generated diagram has: a, b")

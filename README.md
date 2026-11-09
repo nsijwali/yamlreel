@@ -176,16 +176,59 @@ steps:
 ```
 
 `at` is seconds from the scene's start (the same clock as every cue in a spec; speech starts 0.3 s in) and must not
-decrease. A `diagram` step gets a `flash` on node `a`, a `meter` step gets `steps` that alternate between level 4 and 10
-(set real levels afterwards), and an `array` step gets `steps` that mark the three items in turn. Any other `show` is an
-error (`events work with show: diagram, meter or array; this step shows bullets`). The scene lasts at least the last
-`at` plus 1.5 seconds, so the final cue is never cut off; `events: []` is the same as no events.
+decrease. With only `at` and `text`, the generator invents the cue: a `diagram` step gets a `flash` on node `a`, a
+`meter` step gets `steps` that alternate between level 4 and 10, and an `array` step gets `steps` that mark the three
+items in turn. To say what really happens, give an event the step fields of its scene instead of `text` alone: `at`
+plus exactly one action key, which is passed to the scene unchanged and checked by the normal validator. Use one form
+per step: mixing `{at, text}` events with action-key events in the same step is an error.
+
+```yaml
+steps:
+  - name: Queue
+    show: array
+    events:
+      - {at: 1.0, push: job-4}                      # array: one of push, pop, insert, mark, window, unmark (+ text, color)
+      - {at: 2.5, mark: [0], text: Oldest first}
+      - {at: 4.0, pop: front}
+  - name: Bucket
+    show: meter
+    events:
+      - {at: 1.0, level: 10, text: Full}            # meter: level (+ seconds, text, color)
+      - {at: 3.0, level: 2, seconds: 1.5, text: Drained}
+  - name: Flow
+    show: diagram
+    events:
+      - {at: 1.0, flash: b, text: Server hit}       # diagram: flash is a node id of the generated diagram (a or b), with text
+```
+
+An impossible state (a `pop` on an empty array, a `mark` outside the cells, a `level` above the capacity, a `flash` on
+a node the generated diagram does not have) is an error that names the outline, for example
+`steps[0].events[3].pop: array is empty at 6s`. An event with `text` plus another key but no action key, two action keys
+or a key from another `show` is an error that lists the allowed keys. Any other `show` is an
+error (`events work with show: diagram, meter or array; this step shows bullets`). The scene lasts at least the end of every cue (its `at` plus a meter event's `seconds`) plus 1.5 seconds, so the
+final cue is never cut off; `events: []` is the same as no events.
 
 `show` is the scene type for a step (`bullets` by default; `title`, `type`, `code`, `stat`, `diagram`, `table`, `array` or
 `grid`). The scene gets placeholder content marked `TODO` (for example a 3 by 3 table), which the header comment of the
 file lists; replace them, then render with `--preview --no-voice`. Unknown keys, no steps and more than six steps are
 errors. Each scene is at least `words / 2.5 + 1` seconds (narration stretches it if needed). The command refuses to
 overwrite a file unless you pass `--force`; `--theme` and `--format` set them in the spec.
+
+## Script sheet
+
+`yamlreel script spec.yaml` prints the words of a spec for a human to read before anything is rendered: for every scene,
+its number (from 0, as in `check-voice`), type, kicker, title (or the eyebrow, question, value or text of a scene without
+one), caption, full narration and seconds, then the total. It loads the spec exactly like `validate` (same errors, same
+exit codes) and needs no voice server, audio or network.
+
+```bash
+yamlreel script spec.yaml                       # a Markdown table, one row per scene, pipes escaped
+yamlreel script spec.yaml --format text         # a plain block per scene
+yamlreel script spec.yaml --out script.md       # write a file; an existing file needs --force
+```
+
+A scene without narration has an empty narration cell. `--read-screen` shows the text the voice would read for scenes
+without narration. A summary goes to stderr: `9 scenes, 7 narrated, ~182 words` (words are counted from narration only).
 
 ## Examples
 
@@ -208,6 +251,7 @@ overwrite a file unless you pass `--force`; `--theme` and `--format` set them in
 | `yamlreel --version` | Prints the installed version and exits. |
 | `yamlreel init <template> <file>` | Writes a starter spec: `explainer`, `system-design`, `project` or `code-tip`. |
 | `yamlreel story <outline> [--out FILE] [--theme T] [--format F] [--force]` | Turns an outline into a starter spec; see [Story outlines](#story-outlines). |
+| `yamlreel script <spec> [--format md\|text] [--out FILE] [--force]` | Prints every scene's kicker, title, caption and narration for review, without rendering; see [Script sheet](#script-sheet). |
 | `yamlreel check-voice <spec> [--out DIR] [--model NAME]` | Transcribes the cached narration clips and compares them with the narration text; see [Checking the voice](#checking-the-voice). |
 | `yamlreel validate <spec>` | Checks a spec and prints its scene count, length and how many scenes are narrated and subtitled, without rendering. |
 | `yamlreel render <spec>` | Renders. Useful flags: `--preview`, `--out DIR`, `--format vertical\|landscape\|square\|all`, `--music koto\|ambient\|lofi\|pulse\|piano\|none\|file.mp3`, `--fps N`, `--contact-frames N`, `--no-voice`, `--voice-url URL`, `--read-screen`, `--allow-path DIR`, `--allow-private-hosts`. |
@@ -406,6 +450,8 @@ line, never from a spec or project config you downloaded: `allow_paths`, `allow_
 - **New:** the `grid` scene ([Writing a spec](#writing-a-spec)): a stain, lost cells, a status line and recovery, shown in `examples/grid-demo.yaml`.
 - **New:** `kicker` on `bullets`, `code`, `diagram`, `table`, `array`, `meter`, `grid`, `tree` and `timeline` scenes ([Writing a spec](#writing-a-spec)): a numbered tag above the title.
 - **New:** `yamlreel check-voice` ([Checking the voice](#checking-the-voice)) and the `verify` extra, and `events` on outline steps ([Story outlines](#story-outlines)).
+- **New:** story `events` can carry the real step fields (`push`, `pop`, `mark`, `level`, `flash` and so on), passed to the scene unchanged, instead of the generated placeholder cue ([Story outlines](#story-outlines)).
+- **New:** `yamlreel script`, a script sheet of every scene's kicker, title, caption and narration for review ([Script sheet](#script-sheet)).
 
 ## Upgrading to 0.3.0
 

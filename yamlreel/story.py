@@ -9,13 +9,14 @@ before it is returned.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from .config import Config
-from .datascenes import MAX_CELL_CHARS
+from .datascenes import ARRAY_ACTIONS, MAX_CELL_CHARS
 from .scenes import SCENE_TYPES
 from .specs import DEFAULT_SECONDS, MAX_SPEC_BYTES, SpecError, validate
 from .theme import get_theme
@@ -41,7 +42,11 @@ TODO = "TODO"
 
 OUTLINE_KEYS = ("topic", "hook", "problem", "steps", "when_to_use", "question", "answers")
 STEP_KEYS = ("name", "say", "show", "events")
-EVENT_KEYS = ("at", "text")
+EVENT_KEYS = ("at", "text")     # the placeholder form: the generator invents the cue
+# The pass-through form: `at`, exactly one action key, and the optional fields of the scene's own step.
+EVENT_ACTIONS: dict[str, tuple[str, ...]] = {"array": ARRAY_ACTIONS, "meter": ("level",), "diagram": ("flash",)}
+EVENT_EXTRAS: dict[str, tuple[str, ...]] = {"array": ("text", "color"), "meter": ("seconds", "text", "color"),
+                                            "diagram": ("text", "color")}
 DEFAULT_SHOW = "bullets"
 
 
@@ -94,27 +99,63 @@ def _mapping(path: str, v: Any, allowed: tuple[str, ...], what: str) -> dict[str
     return v
 
 
-def _events(path: str, raw: Any) -> list[dict[str, Any]]:
-    """[{at, text}] for a step's `events`, or [] when there are none (`events: []` is the same as no events)."""
+def _event_keys(show: str) -> tuple[str, ...]:
+    return ("at", *EVENT_ACTIONS[show], *EVENT_EXTRAS[show])
+
+
+def _events(path: str, raw: Any, show: str = "meter") -> list[dict[str, Any]]:
+    """A step's `events`, or [] when there are none (`events: []` is the same as no events).
+
+    Each event is `{at, text}` (the generator invents the cue) or `{at, <one action key>, ...}` for the scene it
+    belongs to, which is passed through to the scene unchanged and checked by the scene validator."""
     if raw is None:
         return []
     if not isinstance(raw, list):
         raise StoryError(f"{path} must be a list")
     if len(raw) > MAX_EVENTS:
         raise StoryError(f"{path} has {len(raw)} entries; the limit is {MAX_EVENTS}")
+    actions = EVENT_ACTIONS.get(show, ())
     out: list[dict[str, Any]] = []
     for n, ev in enumerate(raw):
         where = f"{path}[{n}]"
-        ev = _mapping(where, ev, EVENT_KEYS, "an event")
-        for key in EVENT_KEYS:
-            if key not in ev:
-                raise StoryError(f"{where} needs '{key}'")
+        if not isinstance(ev, dict):
+            raise StoryError(f"{where} must be a mapping")
+        given = [a for a in actions if a in ev]
+        allowed = _event_keys(show) if actions else EVENT_KEYS
+        ev = _mapping(where, ev, allowed, f"{'an' if show == 'array' else 'a'} {show} event" if actions else "an event")
+        if len(given) > 1:
+            raise StoryError(f"{where}: an event takes at most one of {', '.join(actions)}, found {' and '.join(given)}")
+        if not given and any(k not in EVENT_KEYS for k in ev):
+            extra = next(k for k in ev if k not in EVENT_KEYS)
+            raise StoryError(f"{where}.{extra}: needs one of {', '.join(actions)} (or only at and text); "
+                             f"allowed: {', '.join(sorted(allowed))}")
+        if "at" not in ev:
+            raise StoryError(f"{where} needs 'at'")
         at = ev["at"]
         if isinstance(at, bool) or not isinstance(at, (int, float)) or not 0 <= at <= MAX_EVENT_AT:
             raise StoryError(f"{where}.at must be a number from 0 to {MAX_EVENT_AT}")
         if out and at < out[-1]["at"]:
             raise StoryError(f"{where}.at must not be earlier than the event before it")
-        out.append({"at": at, "text": _text(f"{where}.text", ev["text"], MAX_CELL_CHARS)})
+        if not given:
+            if "text" not in ev:
+                raise StoryError(f"{where} needs 'text'" + (f", or one of {', '.join(actions)}" if actions else ""))
+            out.append({"at": at, "text": _text(f"{where}.text", ev["text"], MAX_CELL_CHARS)})
+            continue
+        if show == "diagram":
+            appears = {n_["id"]: n_.get("at", 0) for n_ in PLACEHOLDERS["diagram"]["nodes"]}
+            if not isinstance(ev["flash"], str) or ev["flash"] not in appears:
+                raise StoryError(f"{where}.flash: unknown node {ev['flash']!r}; the generated diagram has: "
+                                 f"{', '.join(appears)}")
+            if at < appears[ev["flash"]]:
+                raise StoryError(f"{where}.at: node {ev['flash']!r} of the generated diagram appears at "
+                                 f"{appears[ev['flash']]}s, so it cannot flash at {at}s")
+            if "text" not in ev:
+                raise StoryError(f"{where} needs 'text'")
+            _text(f"{where}.text", ev["text"], MAX_CELL_CHARS)
+        out.append(dict(ev))
+    if actions and out and 0 < sum(1 for e in out if any(a in e for a in actions)) < len(out):
+        raise StoryError(f"{path}: use one form per step, either {{at, text}} events or events with an action key "
+                         f"({', '.join(actions)}), not both")
     return out
 
 
@@ -144,7 +185,7 @@ def parse_outline(raw: Any) -> dict[str, Any]:
         show = st.get("show", DEFAULT_SHOW)
         if not isinstance(show, str) or show not in PLACEHOLDERS:
             raise StoryError(f"{path}.show must be one of {', '.join(PLACEHOLDERS)}")
-        events = _events(f"{path}.events", st.get("events"))
+        events = _events(f"{path}.events", st.get("events"), show if isinstance(show, str) else "")
         if events and show not in EVENT_SHOWS:
             raise StoryError(f"{path}.events: events work with show: diagram, meter or array; this step shows {show}")
         out["steps"].append({"name": _text(f"{path}.name", st["name"], MAX_NAME),
@@ -214,12 +255,20 @@ def _supports() -> tuple[bool, bool]:
 
 def _apply_events(sc: dict[str, Any], kind: str, events: list[dict[str, Any]]) -> None:
     """Turn a step's events into the cues of its scene (diagram flash, meter steps, array steps)."""
+    cues: list[dict[str, Any]] = []
+    for n, ev in enumerate(events):
+        if any(a in ev for a in EVENT_ACTIONS[kind]):      # pass-through: the author's own step fields
+            cues.append(dict(ev))
+        elif kind == "diagram":
+            cues.append({"node": "a", **ev})
+        elif kind == "meter":
+            cues.append({"at": ev["at"], "level": METER_LEVELS[n % 2], "text": ev["text"]})
+        else:
+            cues.append({"at": ev["at"], "mark": [n % 3], "text": ev["text"]})
     if kind == "diagram":
-        sc["flash"] = [{"node": "a", **ev} for ev in events]
-    elif kind == "meter":
-        sc["steps"] = [{"at": ev["at"], "level": METER_LEVELS[n % 2], "text": ev["text"]} for n, ev in enumerate(events)]
+        sc["flash"] = [{"node": c.pop("flash"), **c} if "flash" in c else c for c in cues]
     else:
-        sc["steps"] = [{"at": ev["at"], "mark": [n % 3], "text": ev["text"]} for n, ev in enumerate(events)]
+        sc["steps"] = cues
 
 
 def _step_scene(step: dict[str, Any]) -> dict[str, Any]:
@@ -240,7 +289,8 @@ def _step_scene(step: dict[str, Any]) -> dict[str, Any]:
         sc["narration"] = step["say"]
     sc["seconds"] = narrated_seconds(kind, step["say"])
     if events:   # beat snapping can shorten a scene, so keep the last cue on screen for a moment
-        sc["seconds"] = max(sc["seconds"], events[-1]["at"] + EVENT_HOLD)
+        # a meter ramp keeps draining for its own `seconds`, and an earlier long ramp can outlast a later cue
+        sc["seconds"] = max(sc["seconds"], *(e["at"] + e.get("seconds", 0) + EVENT_HOLD for e in events))
     return sc
 
 
@@ -302,6 +352,23 @@ def render_spec(spec: dict[str, Any], source_name: str) -> str:
     return "\n".join(header) + "\n" + body
 
 
+_CUE_PATH = re.compile(r"scenes\[(\d+)\]\.(?:steps|flash)\[(\d+)\]")
+
+
+def _rebase_event_error(message: str, spec: dict[str, Any], outline: dict[str, Any]) -> str:
+    """The scene validator's message about a step or flash cue, named by the outline path instead:
+    `scenes[3].steps[1].pop: ...` becomes `steps[1].events[1].pop: ...`. "" when the message is about anything else."""
+    m = _CUE_PATH.search(message)
+    if not m:
+        return ""
+    step_scenes = [i for i, sc in enumerate(spec["scenes"]) if "step" in sc]
+    scene = int(m.group(1))
+    if scene not in step_scenes:
+        return ""
+    j = step_scenes.index(scene)
+    return message[:m.start()] + f"steps[{j}].events[{m.group(2)}]" + message[m.end():]
+
+
 def generate(outline: dict[str, Any], source_name: str = "an outline", theme: str | None = None,
              fmt: str | None = None) -> str:
     """The spec text for a checked outline. It is loaded back through the normal validator before it is returned,
@@ -311,9 +378,13 @@ def generate(outline: dict[str, Any], source_name: str = "an outline", theme: st
             get_theme(theme)
         except ValueError as e:
             raise StoryError(f"--theme: {e}") from e
-    text = render_spec(build_spec(outline, theme, fmt), source_name)
+    spec = build_spec(outline, theme, fmt)
+    text = render_spec(spec, source_name)
     try:
         validate(yaml.safe_load(text), Config())
     except SpecError as e:
+        rebased = _rebase_event_error(str(e), spec, outline)
+        if rebased:
+            raise StoryError(rebased) from e
         raise StoryError(f"the generated spec does not validate ({e}); shorten the outline text") from e
     return text
