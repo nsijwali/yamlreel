@@ -23,6 +23,13 @@ from .safety import UnsafeInput, resolve_local
 from .shots import CaptureError
 from .specs import FORMATS, MUSIC_STYLES, SpecError, check_frame_budget, load_spec
 from .theme import FontError, set_font_dirs
+from .yamlpos import LocatedError
+
+
+def _error_line(e: Exception) -> str:
+    """`error: file:line: message` for a spec or outline error with a known line, else `error: message`."""
+    line = e.line if isinstance(e, LocatedError) else None
+    return f"error: {e.source}:{line}: {e}" if line else f"error: {e}"
 
 
 def _templates() -> list[str]:
@@ -217,7 +224,7 @@ def cmd_check_voice(args: argparse.Namespace) -> int:
         findings = voicecheck.check_spec(spec, rt.voice, cache,
                                          lambda p: resolve_local(p, Path(spec.get("_dir", ".")), rt.roots), recognise)
     except (SpecError, ConfigError, UnsafeInput, VoiceError) as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(_error_line(e), file=sys.stderr)
         return 2
     except SystemExit as e:  # _confined_output_dir
         print(e.code, file=sys.stderr)
@@ -367,7 +374,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.fn(args)
     except (SpecError, ConfigError, RenderError, CaptureError, UnsafeInput, FontError, VoiceError, ValueError) as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(_error_line(e), file=sys.stderr)
         return 1
 
 

@@ -346,6 +346,7 @@ scenes: [...]                 # every scene also takes: step (badge label), tran
 - **Subtitles:** see [Word-by-word subtitles](#word-by-word-subtitles).
 - **Contact sheet:** `render --contact-frames N` (1 to 8) writes `contact.png` with N stills per scene, one row per scene, to check that reveals progress and nothing overlaps. Default: two per scene.
 - **Unknown keys are errors:** a misspelled or extra key stops the render, for example `error: scenes[0].titel: unknown field for a title scene; allowed: caption, eyebrow, narration, ...`, instead of being silently ignored.
+- **Error locations:** errors that come from your spec or outline file start with `file:line:`, for example `error: spec.yaml:12: scenes[0].titel: unknown field ...`, so an editor can jump to it. The line points at the key, at the enclosing scene for a missing field, and at the anchor for a key that arrived through `<<:`. Values that come only from your config, and errors found after loading (such as `--fps`), have no line. Scripts that parse the old `error: <path>` start should now expect the location first.
 - **Limits:** `limits.max_seconds` and `limits.max_scenes` are capped at 3600 and 1000, whatever a spec or config sets.
 - **Files:** images, pages, music and logos must sit in the spec's folder, a config folder, or a folder you allow with `--allow-path DIR` (or `allow_paths` in your user config).
 - **Music:** `seed` changes the melody and `snap: true` rounds scene lengths to beats. To use your own track, point `style` at an audio file and credit it in `meta.credits`.
@@ -464,6 +465,7 @@ line, never from a spec or project config you downloaded: `allow_paths`, `allow_
 
 ## Unreleased
 
+- **New:** spec and outline errors now start with `file:line:` (`error: spec.yaml:12: scenes[0].titel: ...`), so editors can jump to the mistake ([Writing a spec](#writing-a-spec)). Scripts that parse the old `error: <path>` start should expect the location first.
 - **New:** `yamlreel render --only N,A-B` renders only some scenes, cut out of the full video, into `video-scenes-<N>.mp4` beside the full outputs ([Rendering part of a video](#rendering-part-of-a-video)).
 
 ## New in 0.3.2
