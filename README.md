@@ -463,7 +463,7 @@ A few settings widen what a spec can touch, so yamlreel only reads them from you
 line, never from a spec or project config you downloaded: `allow_paths`, `allow_private_hosts`,
 `chromium_path`, `font_dir` and `voice_server`. See [SECURITY.md](https://github.com/nsijwali/yamlreel/blob/main/SECURITY.md).
 
-## Unreleased
+## New in 0.3.3
 
 - **New:** spec and outline errors now start with `file:line:` (`error: spec.yaml:12: scenes[0].titel: ...`), so editors can jump to the mistake ([Writing a spec](#writing-a-spec)). Scripts that parse the old `error: <path>` start should expect the location first.
 - **New:** `yamlreel render --only N,A-B` renders only some scenes, cut out of the full video, into `video-scenes-<N>.mp4` beside the full outputs ([Rendering part of a video](#rendering-part-of-a-video)).
