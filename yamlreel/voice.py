@@ -324,6 +324,12 @@ def narration_cache_key(server: VoiceServer, text: str, voice: str | None, langu
     return hashlib.sha256(blob.encode()).hexdigest()[:20]
 
 
+def cached_clip_path(cache: Path, server: VoiceServer, text: str, vo: dict[str, Any]) -> Path:
+    """Where the raw synthesised clip for this text lives (or would live): render and check-voice both use it."""
+    key = narration_cache_key(server, text, vo.get("voice"), vo.get("language"))
+    return cache / f"narration-v{CACHE_KEY_VERSION}-{key}.wav"
+
+
 def min_scene_seconds(samples: np.ndarray, gap: float) -> float:
     """The shortest scene that holds this clip: the speech, then the larger of the gap and the lead."""
     return len(samples) / SAMPLE_RATE + max(gap, NARRATION_LEAD)
@@ -354,8 +360,7 @@ def prepare_narration(spec: dict[str, Any], server: VoiceServer | None, cache: P
                     f"scene {i} has narration but no voice server is configured. Set voice_server.url in your "
                     "user config (yamlreel config init --user) or pass --voice-url, use narration_audio files, or "
                     "render with --no-voice for music only.")
-            key = narration_cache_key(server, text, vo.get("voice"), vo.get("language"))
-            cached = cache / f"narration-v{CACHE_KEY_VERSION}-{key}.wav"
+            cached = cached_clip_path(cache, server, text, vo)
             if not cached.exists():
                 if session is None:
                     session = _Session(server)

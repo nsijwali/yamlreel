@@ -87,10 +87,12 @@ yamlreel render cache-stampede-45s.yaml --no-voice
 | ffmpeg | the `[ffmpeg]` extra (or `brew install ffmpeg`) | the extra, or `sudo apt install ffmpeg`. On Fedora use the extra: its own `ffmpeg-free` cannot encode H.264 | the `[ffmpeg]` extra |
 | Fonts | `brew install --cask font-dejavu` | Debian/Ubuntu: `sudo apt install fonts-dejavu-core`; Fedora: `sudo dnf install dejavu-sans-fonts dejavu-serif-fonts dejavu-sans-mono-fonts`; Arch: `sudo pacman -S ttf-dejavu` | DejaVu from [dejavu-fonts.github.io](https://dejavu-fonts.github.io) |
 | Web captures (optional) | `pip install "yamlreel[capture]"` then `playwright install chromium` | same | same |
+| Voice check (optional) | `pip install "yamlreel[verify]"` | same | same |
 
 - **ffmpeg:** yamlreel uses the `ffmpeg` on your PATH if there is one, and otherwise the copy that the `[ffmpeg]` extra (the `imageio-ffmpeg` package) brings along. You only need one of them.
 - **Fonts:** yamlreel looks in your `font_dir` setting (or `YAMLREEL_FONT_DIR`) first, then the system font folders, then your own (`~/Library/Fonts` on macOS, `%LOCALAPPDATA%\Microsoft\Windows\Fonts` on Windows). If your fonts live anywhere else, point `font_dir` at that folder. Japanese text uses Noto CJK when it is installed.
 - **Web captures** are only needed for `shot` scenes that screenshot a URL. `chromium_path` in your user config (or `YAMLREEL_CHROMIUM`) picks a different browser.
+- **Voice check** is only needed for `yamlreel check-voice` ([Checking the voice](#checking-the-voice)). The `[verify]` extra installs `faster-whisper` and pins PyAV below 17 (PyAV 19 removed an argument that faster-whisper 1.2.1 still passes); the first run downloads a speech model (about 145 MB).
 - **Windows** is not covered by CI yet. Reports are welcome.
 
 </details>
@@ -161,6 +163,24 @@ question: Which strategy does your service use?   # optional: the end card; with
 answers: [Round robin, Least connections]         # optional, up to 4
 ```
 
+A step can also have `events`, timed cues that make its scene move with the voice instead of sitting still:
+
+```yaml
+steps:
+  - name: Queue
+    say: "A queue absorbs the burst. But a queue isn't extra capacity."
+    show: meter
+    events:                          # up to 8; each has `at` (0 to 60 seconds) and `text` (up to 40 characters)
+      - {at: 1.0, text: Burst arrives}
+      - {at: 3.5, text: Queue full}
+```
+
+`at` is seconds from the scene's start (the same clock as every cue in a spec; speech starts 0.3 s in) and must not
+decrease. A `diagram` step gets a `flash` on node `a`, a `meter` step gets `steps` that alternate between level 4 and 10
+(set real levels afterwards), and an `array` step gets `steps` that mark the three items in turn. Any other `show` is an
+error (`events work with show: diagram, meter or array; this step shows bullets`). The scene lasts at least the last
+`at` plus 1.5 seconds, so the final cue is never cut off; `events: []` is the same as no events.
+
 `show` is the scene type for a step (`bullets` by default; `title`, `type`, `code`, `stat`, `diagram`, `table`, `array` or
 `grid`). The scene gets placeholder content marked `TODO` (for example a 3 by 3 table), which the header comment of the
 file lists; replace them, then render with `--preview --no-voice`. Unknown keys, no steps and more than six steps are
@@ -188,6 +208,7 @@ overwrite a file unless you pass `--force`; `--theme` and `--format` set them in
 | `yamlreel --version` | Prints the installed version and exits. |
 | `yamlreel init <template> <file>` | Writes a starter spec: `explainer`, `system-design`, `project` or `code-tip`. |
 | `yamlreel story <outline> [--out FILE] [--theme T] [--format F] [--force]` | Turns an outline into a starter spec; see [Story outlines](#story-outlines). |
+| `yamlreel check-voice <spec> [--out DIR] [--model NAME]` | Transcribes the cached narration clips and compares them with the narration text; see [Checking the voice](#checking-the-voice). |
 | `yamlreel validate <spec>` | Checks a spec and prints its scene count, length and how many scenes are narrated and subtitled, without rendering. |
 | `yamlreel render <spec>` | Renders. Useful flags: `--preview`, `--out DIR`, `--format vertical\|landscape\|square\|all`, `--music koto\|ambient\|lofi\|pulse\|piano\|none\|file.mp3`, `--fps N`, `--contact-frames N`, `--no-voice`, `--voice-url URL`, `--read-screen`, `--allow-path DIR`, `--allow-private-hosts`. |
 | `yamlreel config init [--user]` / `config show` | Writes a starter config, or shows the merged settings and the files they came from. |
@@ -338,6 +359,24 @@ folder) instead of `narration:`.
 
 </details>
 
+## Checking the voice
+
+A voice model can drop a word without anyone noticing, such as a clip that said "a queue is extra capacity" for
+"a queue isn't extra capacity". After a render, `yamlreel check-voice spec.yaml` transcribes the cached narration
+clips and compares them with your narration text. It never synthesises, so render first (or pass the same `--out`).
+
+```bash
+pip install "yamlreel[verify]"     # the first run downloads the base.en speech model, about 145 MB
+yamlreel check-voice spec.yaml     # also: --out DIR, --model NAME_OR_PATH, --voice-url URL, --read-screen
+```
+
+Per scene, an **ERROR** means a negation (`not`, `no`, `never`, `without`) was dropped or added, or the numbers differ;
+a **WARNING** means more than 20% of the words were not heard. Contractions, digits and number words are treated as
+equal ("isn't" and "is not", "3" and "three"). Notes (no error): a scene that is not cached, has no transcript, or has
+under one second of speech, which is too short to transcribe reliably. The exit code is 0 when clean, 1 for any ERROR or
+WARNING, and 2 for a setup problem (no `faster-whisper`, no voice server to find the clips, non-English narration).
+English only. It is a safety net, not proof: the recogniser can mishear a name, so listen to any flagged scene.
+
 ## Configuration
 
 Defaults live in a config file, so a spec only needs to say what is different for that video. You can adapt
@@ -366,6 +405,7 @@ line, never from a spec or project config you downloaded: `allow_paths`, `allow_
 - **New:** `voiceover.speed` and `voiceover.trim` ([Writing a spec](#writing-a-spec)) and the `editorial` theme.
 - **New:** the `grid` scene ([Writing a spec](#writing-a-spec)): a stain, lost cells, a status line and recovery, shown in `examples/grid-demo.yaml`.
 - **New:** `kicker` on `bullets`, `code`, `diagram`, `table`, `array`, `meter`, `grid`, `tree` and `timeline` scenes ([Writing a spec](#writing-a-spec)): a numbered tag above the title.
+- **New:** `yamlreel check-voice` ([Checking the voice](#checking-the-voice)) and the `verify` extra, and `events` on outline steps ([Story outlines](#story-outlines)).
 
 ## Upgrading to 0.3.0
 
@@ -389,6 +429,8 @@ line, never from a spec or project config you downloaded: `allow_paths`, `allow_
 | `Client error '403 Forbidden' for url '…/generate'` | Accept the OmniVoice and tokenizer licences in VoiceStudio's Model Catalogue. |
 | `Server error '500'` from the voice server, or the server is killed | The machine is out of memory. Close other apps, and use a 5 to 10 second voice sample: a longer reference needs over 2 GB on the CPU. |
 | `voice server reply had no audio` | VoiceStudio is set to `OMNIVOICE_MCP_OUTPUT_MODE=files`. yamlreel needs the default inline mode. |
+| `check-voice needs faster-whisper` | `pip install "yamlreel[verify]"`. |
+| `not cached, run render first` (from `check-voice`) | Render the spec first, with the same `--out` and voice server, so the clips exist. |
 | `capturing a URL needs playwright` | `pip install "yamlreel[capture]"`, then `playwright install chromium`. |
 | `could not capture … Executable doesn't exist` | Run `playwright install chromium`, or set `chromium_path` in your user config. |
 | `… outside the folders this run may read` | Move the file next to your spec, or pass `--allow-path DIR`. For localhost pages, add `--allow-private-hosts`. |

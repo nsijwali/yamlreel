@@ -366,3 +366,70 @@ def test_make_badge_survives_more_steps_than_pixels(tmp_path, fmt):
     b = badge_mod.make_badge(tl.ctx, 200, 400, "Many")
     y = b.rgb.height - 2
     assert b.rgb.getpixel((2, y)) == th.accent and b.rgb.getpixel((b.rgb.width - 3, y)) == th.line
+
+
+# --- events -----------------------------------------------------------------------------------------------
+
+def _outline(show, events, say="Short."):
+    return {"topic": "t", "hook": "h", "steps": [{"name": "Queue", "say": say, "show": show, "events": events}]}
+
+
+def _step_scene(show, events, say="Short."):
+    spec = yaml.safe_load(story.generate(story.parse_outline(_outline(show, events, say))))
+    return next(sc for sc in spec["scenes"] if sc.get("step") == "Queue")
+
+
+EVENTS = [{"at": 1.0, "text": "Burst arrives"}, {"at": 3.5, "text": "Queue full"}, {"at": 5, "text": "Drained"},
+          {"at": 6, "text": "Again"}]
+
+
+def test_events_become_cues_for_diagram_meter_and_array(tmp_path):
+    d = _step_scene("diagram", EVENTS[:2])
+    assert d["flash"] == [{"node": "a", "at": 1.0, "text": "Burst arrives"}, {"node": "a", "at": 3.5, "text": "Queue full"}]
+    assert [n["id"] for n in d["nodes"]] == ["a", "b"] and len(d["edges"]) == 1
+    m = _step_scene("meter", EVENTS)
+    assert m["steps"] == [{"at": 1.0, "level": 4, "text": "Burst arrives"}, {"at": 3.5, "level": 10, "text": "Queue full"},
+                          {"at": 5, "level": 4, "text": "Drained"}, {"at": 6, "level": 10, "text": "Again"}]
+    a = _step_scene("array", EVENTS)
+    assert a["steps"] == [{"at": 1.0, "mark": [0], "text": "Burst arrives"}, {"at": 3.5, "mark": [1], "text": "Queue full"},
+                          {"at": 5, "mark": [2], "text": "Drained"}, {"at": 6, "mark": [0], "text": "Again"}]
+    for show in ("diagram", "meter", "array"):
+        outline = _outline(show, EVENTS[:2])
+        (tmp_path / f"{show}.yaml").write_text(story.generate(story.parse_outline(outline)), encoding="utf-8")
+        load_spec(tmp_path / f"{show}.yaml")
+
+
+@pytest.mark.parametrize("show", ["bullets", "table", "timeline"])
+def test_events_on_other_scene_types_are_an_error(show):
+    with pytest.raises(story.StoryError, match=rf"steps\[0\]\.events: events work with show: diagram, meter or array; "
+                                               rf"this step shows {show}"):
+        story.parse_outline(_outline(show, EVENTS[:1]))
+    story.parse_outline(_outline(show, []))      # events: [] is the same as none
+
+
+def test_event_validation():
+    def bad(events, match):
+        with pytest.raises(story.StoryError, match=match):
+            story.parse_outline(_outline("meter", events))
+    bad("x", "must be a list")
+    bad([1], "must be a mapping")
+    bad([{"at": 1}], "needs 'text'")
+    bad([{"text": "x"}], "needs 'at'")
+    bad([{"at": 1, "text": "x", "level": 3}], "unknown field")
+    bad([{"at": -1, "text": "x"}], "from 0 to 60")
+    bad([{"at": 61, "text": "x"}], "from 0 to 60")
+    bad([{"at": "1", "text": "x"}], "from 0 to 60")
+    bad([{"at": True, "text": "x"}], "from 0 to 60")
+    bad([{"at": 2, "text": "x"}, {"at": 1, "text": "y"}], "must not be earlier")
+    bad([{"at": 1, "text": ""}], "must not be empty")
+    bad([{"at": 1, "text": "y" * 41}], "limit is 40")
+    bad([{"at": n, "text": "x"} for n in range(9)], "the limit is 8")
+    ok = story.parse_outline(_outline("meter", [{"at": n, "text": "x"} for n in (0, 0, 60)] + [{"at": 60, "text": "y" * 40}]))
+    assert len(ok["steps"][0]["events"]) == 4
+
+
+def test_events_lengthen_the_scene_to_hold_the_last_cue():
+    assert _step_scene("meter", [{"at": 9, "text": "x"}])["seconds"] == 10.5
+    long_say = " ".join(["word"] * 40)
+    assert _step_scene("meter", [{"at": 9, "text": "x"}], say=long_say)["seconds"] == story.narrated_seconds("meter", long_say)
+    assert _step_scene("meter", [])["seconds"] == story.narrated_seconds("meter", "Short.")
