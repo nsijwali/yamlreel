@@ -1,4 +1,4 @@
-"""Command line interface: yamlreel render|validate|check-voice|init|story|config|music."""
+"""Command line interface: yamlreel render|validate|script|check-voice|init|story|config|music."""
 from __future__ import annotations
 
 import argparse
@@ -69,6 +69,65 @@ def cmd_validate(args: argparse.Namespace) -> int:
                     and (sc.get("narration_words") or voice_mod.narration_text(sc, vo)))
     print(f"ok: {len(spec['scenes'])} scenes, {total:.1f}s, theme={spec['theme']}, formats={spec['formats']}, "
           f"narrated={len(narrated)}, subtitled={subtitled}")
+    return 0
+
+
+SCRIPT_TITLE_FIELDS = ("title", "eyebrow", "question", "value", "text")   # the first one a scene has is its heading
+
+
+def _script_rows(spec: dict) -> list[dict]:
+    """One row per scene for the script sheet: every cell is plain text, '' when the scene has none."""
+    vo = spec.get("voiceover") or {}
+    rows = []
+    for n, sc in enumerate(spec["scenes"]):
+        heading = next((str(sc[k]) for k in SCRIPT_TITLE_FIELDS if sc.get(k) not in (None, "")), "")
+        rows.append({"n": n, "type": sc["type"], "kicker": str(sc.get("kicker") or ""), "title": heading,
+                     "caption": str(sc.get("caption") or ""), "narration": voice_mod.narration_text(sc, vo) or "",
+                     "seconds": sc["seconds"]})
+    return rows
+
+
+def _md_cell(text: str) -> str:
+    return " ".join(text.split()).replace("|", "\\|")
+
+
+def format_script(rows: list[dict], fmt: str) -> str:
+    total = sum(r["seconds"] for r in rows)
+    if fmt == "md":
+        lines = ["| # | Type | Kicker | Title | Caption | Narration | Seconds |", "| --- | --- | --- | --- | --- | --- | --- |"]
+        lines += [f"| {r['n']} | {r['type']} | {_md_cell(r['kicker'])} | {_md_cell(r['title'])} | {_md_cell(r['caption'])} "
+                  f"| {_md_cell(r['narration'])} | {r['seconds']:.1f} |" for r in rows]
+        return "\n".join(lines) + f"\n\nTotal: {total:.1f}s\n"
+    blocks = []
+    for r in rows:
+        block = [f"Scene {r['n']} ({r['type']}, {r['seconds']:.1f}s)"]
+        block += [f"  {label}: {r[key]}" for label, key in
+                  (("Kicker", "kicker"), ("Title", "title"), ("Caption", "caption"), ("Narration", "narration"))]
+        blocks.append("\n".join(block))
+    return "\n\n".join(blocks) + f"\n\nTotal: {total:.1f}s\n"
+
+
+def cmd_script(args: argparse.Namespace) -> int:
+    """Print the script sheet for human review. Loads the spec exactly like `validate`; renders nothing."""
+    cfg = _config(args)
+    spec = load_spec(args.spec, cfg)
+    if args.read_screen:
+        spec["voiceover"] = {**spec["voiceover"], "read_screen": True}
+    rows = _script_rows(spec)
+    text = format_script(rows, args.format)
+    dest = Path(args.out) if args.out else None
+    if dest is not None and dest.exists() and not args.force:
+        print(f"{dest} exists; pass --force to overwrite", file=sys.stderr)
+        return 2
+    narrated = [r for r in rows if r["narration"]]
+    words = sum(len(r["narration"].split()) for r in narrated)
+    if dest is None:
+        sys.stdout.write(text)
+    else:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(text, encoding="utf-8")
+        print(f"wrote {dest}")
+    print(f"{len(rows)} scenes, {len(narrated)} narrated, ~{words} words", file=sys.stderr)
     return 0
 
 
@@ -216,6 +275,12 @@ def main(argv: list[str] | None = None) -> int:
     v = sub.add_parser("validate", parents=[common], help="check a spec without rendering")
     v.add_argument("spec")
     v.set_defaults(fn=cmd_validate)
+    sc = sub.add_parser("script", parents=[common], help="print every scene's kicker, title, caption and narration for review")
+    sc.add_argument("spec")
+    sc.add_argument("--format", choices=["md", "text"], default="md", help="md: one table row per scene (default); text: a block per scene")
+    sc.add_argument("--out", help="write the sheet to FILE instead of stdout")
+    sc.add_argument("--force", action="store_true", help="overwrite an existing --out file")
+    sc.set_defaults(fn=cmd_script)
     r = sub.add_parser("render", parents=[common], help="render video, poster, contact sheet and share copy")
     r.add_argument("spec")
     r.add_argument("--out", help="output folder (default: output_dir from config)")

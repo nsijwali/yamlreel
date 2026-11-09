@@ -424,6 +424,7 @@ def _edges(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, A
 
 def _flash(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
     ids = {n["id"] for n in sc["nodes"]}
+    appears = {n["id"]: n["at"] for n in sc["nodes"] if "at" in n}   # only nodes with an explicit `at`; the rest are timed by the scene
     out = []
     for n, f in enumerate(_list(path, v, 0, MAX_FLASH, "MAX_FLASH")):
         p = f"{path}[{n}]"
@@ -434,6 +435,8 @@ def _flash(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, A
         flash = dict(f)
         flash["node"] = _node_ref(f"{p}.node", f["node"], ids)
         flash["at"] = _number(f"{p}.at", f.get("at", 0), 0, MAX_CUE_SECONDS)
+        if flash["at"] < appears.get(flash["node"], 0):
+            raise SpecError(f"{p}.at: node {flash['node']!r} appears at {appears[flash['node']]}s, so it cannot flash at {flash['at']}s")
         if "text" in f:
             flash["text"] = _text(f"{p}.text", f["text"])
         if "color" in f:
