@@ -218,14 +218,17 @@ scenes:
 | --- | --- | --- |
 | `title` | eyebrow, title, subtitle and URL, easing in line by line | `title`, `eyebrow`, `subtitle`, `url` |
 | `type` | one line typed out with a cursor: your hook | `text` |
-| `bullets` | points that appear one at a time | `title`, `items`, `stagger` |
-| `code` | code typed on screen, with highlighted lines | `code`, `highlight`, `title` |
+| `bullets` | points that appear one at a time | `title`, `items`, `stagger`, `kicker` |
+| `code` | code typed on screen, with highlighted lines | `code`, `highlight`, `title`, `kicker` |
 | `stat` | one big number or phrase, optionally counting up | `value`, `label`, `eyebrow`, `count` |
-| `table` | rows that appear one by one, a scan bar walking down them, highlighted rows and a ticking counter | `title`, `columns`, `rows`, `stagger`, `reveal`, `scan`, `highlight`, `counter` |
-| `array` | one row of cells that take sorted inserts, pushes and pops, marks and a sliding window | `title`, `items`, `steps`, `stagger` |
-| `grid` | a matrix of `#`, `.` and `o` cells that is revealed, stained, loses cells and gets them back, with a status line and outlines | `title`, `cells`, `steps`, `seed` |
+| `table` | rows that appear one by one, a scan bar walking down them, highlighted rows and a ticking counter | `title`, `columns`, `rows`, `stagger`, `reveal`, `scan`, `highlight`, `counter`, `kicker` |
+| `array` | one row of cells that take sorted inserts, pushes and pops, marks and a sliding window | `title`, `items`, `steps`, `stagger`, `kicker` |
+| `grid` | a matrix of `#`, `.` and `o` cells that is revealed, stained, loses cells and gets them back, with a status line and outlines | `title`, `cells`, `steps`, `seed`, `kicker` |
+| `meter` | a level that fills and drains: a bucket, a bar or a row of slots, with a live readout and step labels | `title`, `shape`, `capacity`, `start`, `unit`, `in_label`, `out_label`, `steps`, `kicker` |
+| `tree` | a top-down tree whose nodes appear one by one, with a path that lights node after node | `title`, `nodes`, `path`, `kicker` |
+| `timeline` | events on an axis, a window that slides over them and a live count of the events inside | `title`, `axis`, `events`, `window`, `count`, `kicker` |
 | `cta` | an end card: a question bubble, lettered answer chips (A to D) and a pulsing prompt | `question`, `answers`, `prompt` |
-| `diagram` | boxes and arrows that appear in order, packets flowing, nodes flashing | `nodes`, `edges`, `flash`, `title` |
+| `diagram` | boxes and arrows that appear in order, packets flowing, nodes flashing | `nodes`, `edges`, `flash`, `title`, `kicker` |
 | `shot` | a screenshot of a URL or an image, with a slow camera move | `source`, `zoom`, `focus`, `fit`, `click`, `scroll_y` |
 
 <details>
@@ -254,6 +257,7 @@ scenes: [...]                 # every scene also takes: step (badge label), tran
 - **Table:** `columns` (1 to 6) and `rows` (1 to 12, each with one cell per column, cells up to 40 characters; quote a number to keep its formatting). Rows appear `stagger` seconds apart (default 0.4; `reveal: all` shows them at once). `scan: {at: 1.5, per_row: 0.3, stop: 4, color: accent}` walks a bar down from the first row and stays on row `stop` (rows count from 0; `scan: true` walks to the last row). `highlight: [{row: 4, at: 4.0, text: found, color: accent2}]` tints a row and tags it. `counter: {label: rows scanned, to: 10000000, at: 1.5, seconds: 3}` ticks a number up beside the table (below it in vertical). Text shrinks to fit, with a warning, and a warning says when a cue comes before its row appears.
 - **Array:** `items` (0 to 12 cells) and up to 40 `steps`, each with `at` and exactly one action: `insert: x` (a sorted insert: before the first cell that sorts after it, numbers by value and before text), `push: x` (at the end), `pop: front|back`, `mark: [1, 2]` (cell indices, with optional `text` and `color`), `window: [0, 2]` (a bracket over cells; a later `window` slides it, and it is trimmed if cells leave) and `unmark: true` (clears marks and the window). A step without `at` comes `stagger` (default 0.8) seconds after the one before; steps run in time order. The steps are replayed when the spec loads, so `scenes[2].steps[3].pop: array is empty at 2.4s` is an error before rendering. A warning says when a `mark` or `window` label would run off the left or right edge.
 - **Grid:** `cells` is 1 to 33 rows of equal length (1 to 33), each character `#` (the foreground colour), `.` (the background card colour) or `o` (the accent). **Quote every row that starts with `#`**: YAML reads an unquoted one as a comment, and the error says so. `seed` (0 to 1000000, default 0) fixes the stain's shape and the random orders. Up to 40 `steps`, in time order, each with `at` and exactly one action: `reveal: sweep|pop` (`seconds`, default 1), `stain: [row, col]` (needs `radius` 0.5 to 33 cells, `seconds` default 1.5), `clear_stain: true` (the covered cells become lost), `lose: [[r, c], ...]`, `recover: all|[[r, c], ...]` (`per_cell` 0.01 to 2, default 0.08; `order: row|random`), `status: text` (a line above the grid, with `color`), `outline: [r0, c0, r1, c1]` (with `text` and `color`), `unmark: true` (clears the outlines) and `fail: true` (the frame pulses twice; `text` shows for 1.5 s). Cells are `#` foreground, `.` card and `o` accent (on a dark theme `#` is light on a dark card, so for a QR code that must look like a scannable code, use a light theme such as `washi` or `editorial`); lost cells are dimmed and hatched. The steps are replayed when the spec loads, so `scenes[2].steps[5].recover: no cells are lost at 6s` is an error before rendering. Without a `reveal` step the grid fades in at 0.1 s. A warning says when cells are under 16px, the caption would cover the grid, a status shrank to fit, or a step ends after the scene.
+- **Kicker:** `kicker: "01 / THE BURST"` on a `bullets`, `code`, `diagram`, `table`, `array`, `meter`, `grid`, `tree` or `timeline` scene (`title` scenes have `eyebrow`) draws a small tracked tag in the accent colour above the title, or where the title would start if there is none. One line, up to 48 characters; shrinks with a warning if too wide.
 - **Step badge:** `step: Token bucket` on a scene draws `STEP n/N · TOKEN BUCKET` and an N-segment progress bar at the top centre. N is the number of distinct `step` labels in the spec, in order of first appearance; n is this scene's label. Consecutive scenes may share a label. A spec may use at most 12 distinct labels (`MAX_STEP_LABELS`). A warning appears when the watermark would overlap the badge.
 - **CTA end card:** `type: cta` with `question` (required), `answers` (0 to 4, shown as A to D) and `prompt` (default "Answer in the comments"). The bubble pops in, the answers follow one by one and the prompt pulses once a second. The first `cta` question is also added to `share-copy.txt` (before the links and hashtags, unless it is already in the description), and `--read-screen` reads the question, answers and prompt.
 - **Subtitles:** see [Word-by-word subtitles](#word-by-word-subtitles).
@@ -361,6 +365,7 @@ line, never from a spec or project config you downloaded: `allow_paths`, `allow_
 
 - **New:** `voiceover.speed` and `voiceover.trim` ([Writing a spec](#writing-a-spec)) and the `editorial` theme.
 - **New:** the `grid` scene ([Writing a spec](#writing-a-spec)): a stain, lost cells, a status line and recovery, shown in `examples/grid-demo.yaml`.
+- **New:** `kicker` on `bullets`, `code`, `diagram`, `table`, `array`, `meter`, `grid`, `tree` and `timeline` scenes ([Writing a spec](#writing-a-spec)): a numbered tag above the title.
 
 ## Upgrading to 0.3.0
 

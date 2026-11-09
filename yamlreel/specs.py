@@ -80,6 +80,7 @@ MAX_THEME_NAME = 60
 MAX_FORMATS = 3
 MAX_STEP_LABEL = 60      # characters in a scene's `step` label
 MAX_STEP_LABELS = 12     # distinct `step` labels in one spec (the badge draws one progress segment per label)
+MAX_KICKER_CHARS = 48    # characters in a scene's `kicker`
 NODE_SIZE = (16, 120)
 # Output frames over all formats: one hour at 60 fps, or two formats at 30 fps.
 MAX_FRAMES = 216_000
@@ -443,6 +444,15 @@ def _flash(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, A
 
 def _text_field(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
     return _text(path, v)
+
+
+def _kicker(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
+    out = _text(path, v, MAX_KICKER_CHARS, "MAX_KICKER_CHARS")
+    if "\n" in out or "\r" in out:
+        raise SpecError(f"{path} must be one line of text, without a line break")
+    if not out.strip():
+        raise SpecError(f"{path} must not be empty")
+    return out
 
 
 def _bool_field(path: str, v: Any, sc: dict[str, Any], env: _Env) -> bool:
@@ -948,6 +958,7 @@ FIELD_CHECKS: dict[str, Checker] = {
     "count": _count,
     "title": _text_field,
     "eyebrow": _text_field,
+    "kicker": _kicker,
     "subtitle": _text_field,
     "url": _text_field,
     "rule": _bool_field,

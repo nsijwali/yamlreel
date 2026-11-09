@@ -16,7 +16,7 @@ from typing import Any, ClassVar, Iterable
 
 from PIL import Image, ImageChops, ImageDraw
 
-from .scenebase import Ctx, Scene, _appear
+from .scenebase import Ctx, Scene, _appear, kicker_shift, make_kicker
 from .textkit import MAX_COUNT_DECIMALS, TextBlock, blit, ease, ease_out, lerp_color, make_block
 from .theme import Color, font
 
@@ -229,7 +229,7 @@ class TableScene(Scene):
     """Rows appear one by one, a scan bar walks down them, rows can be highlighted, a counter can tick up."""
 
     FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"title", "columns", "rows", "stagger", "reveal", "scan", "highlight", "counter"})
+        {"title", "columns", "rows", "stagger", "reveal", "scan", "highlight", "counter", "kicker"})
     SCAN_FIELDS: ClassVar[frozenset[str]] = frozenset({"at", "per_row", "stop", "color"})
     HIGHLIGHT_FIELDS: ClassVar[frozenset[str]] = frozenset({"row", "at", "text", "color"})
     COUNTER_FIELDS: ClassVar[frozenset[str]] = frozenset({"label", "to", "at", "seconds"})
@@ -271,6 +271,7 @@ class TableScene(Scene):
         self.head = (ctx.block(str(spec["title"]).upper(), "sans_bold", 30 * u, avail_w, tracking=6 * u)
                      if spec.get("title") else None)
         head_h = self.head.height + 34 * u if self.head else 0.0
+        self.kicker = make_kicker(ctx, spec, avail_w)
         side_counter = self.counter is not None and not ctx.vertical
         gap = 44 * u
         counter_w = avail_w * 0.29 if side_counter else 0.0
@@ -287,7 +288,8 @@ class TableScene(Scene):
                                         max_h=120 * u) if self.counter["label"] else None)
             counter_h = final.height + (self.cnt_label.height + 10 * u if self.cnt_label else 0)
             self._cnt_cache = _BlockCache(self.COUNTER_CACHE)
-        area_h = H * (0.57 if ctx.vertical else 0.66) - head_h - (counter_h + 34 * u if ctx.vertical and self.counter else 0)
+        stack_extra = counter_h + 34 * u if ctx.vertical and self.counter else 0.0   # the counter under the table
+        area_h = H * (0.57 if ctx.vertical else 0.66) - head_h - stack_extra
         tag_size_k = 0.72
 
         def tag_block(text: str, base: float) -> TextBlock:
@@ -312,9 +314,16 @@ class TableScene(Scene):
             need_w = sum(natural) + tag_w
             need_h = row_h * (n + 1) + 2 * card_pad
             tags_fit = all(b.height <= row_h * 0.9 for b in tags)  # a tag sits inside its row
-            if (need_w <= table_w and need_h <= area_h and tags_fit) or size <= floor:
+            # a kicker moves the title and the table down by `shift`, and the table gives that room up
+            shift = kicker_shift(ctx, self.kicker, max(H * 0.05, centre_y(ctx) - (head_h + need_h + stack_extra) / 2))
+            if (need_w <= table_w and need_h <= area_h - shift and tags_fit) or size <= floor:
                 break
             size -= 2
+        # at the floor the table may still not fit: the lower limit stays, so the kicker gets only the room that is left
+        room = max(0.0, area_h - need_h)
+        if shift > room:
+            shift = room
+            ctx.warn("table: no room for the kicker; shorten the content or the kicker")
         self.size = size
         if size < MIN_READABLE * u:
             ctx.warn(f"table text is small ({int(size)}px); use fewer rows or columns, or shorter cells")
@@ -322,9 +331,10 @@ class TableScene(Scene):
         self.col_w = [w * scale for w in natural]
         self.pad_x, self.row_h, self.tag_w, self.card_pad = pad_x, row_h, tag_w, card_pad
         card_h = need_h
-        total_h = head_h + card_h + (counter_h + 34 * u if ctx.vertical and self.counter else 0.0)
-        top = max(H * 0.05, centre_y(ctx) - total_h / 2)
+        total_h = head_h + card_h + stack_extra
+        top = max(H * 0.05, centre_y(ctx) - total_h / 2) + shift
         self.head_xy = (margin, top)
+        self.place_kicker(margin, top, False)
         cy0 = top + head_h
         self.card = (margin, cy0, margin + table_w, cy0 + card_h)
         self.header_y = cy0 + card_pad
@@ -412,6 +422,7 @@ class TableScene(Scene):
         img = self.static_layer("table", self._draw_static)
         d = ImageDraw.Draw(img)
         x0, _, x1, _ = self.card
+        self.draw_kicker(img, t)
         if self.head:
             blit(img, self.head, self.head_xy, th.accent2, _appear(t, 0.05), "tl")
         ha = _appear(t, 0.1)
@@ -478,7 +489,7 @@ class TableScene(Scene):
 class ArrayScene(Scene):
     """One row of cells that insert, push, pop, get marked and bracketed, following `array_states`."""
 
-    FIELDS: ClassVar[frozenset[str]] = frozenset({"title", "items", "steps", "stagger"})
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"title", "items", "steps", "stagger", "kicker"})
     STEP_FIELDS: ClassVar[frozenset[str]] = frozenset({"at", "text", "color", *ARRAY_ACTIONS})
 
     def __init__(self, spec: dict[str, Any], ctx: Ctx):
@@ -528,6 +539,8 @@ class ArrayScene(Scene):
         total = title_h + zone_top + self.cell_h + 2 * pad + zone_bot
         top = max(H * 0.05, centre_y(ctx) - total / 2)
         self.title_xy = (W / 2, top)
+        self.kicker = make_kicker(ctx, spec, W - 2 * margin)
+        self.place_kicker(W / 2, top, True)   # the stack is never taller than the frame has room for: no shift
         self.card = (margin, top + title_h + zone_top, W - margin, top + title_h + zone_top + self.cell_h + 2 * pad)
         self.cell_cy = self.card[1] + pad + self.cell_h / 2
         self.pad = pad
@@ -643,6 +656,7 @@ class ArrayScene(Scene):
         c, th, u = self.ctx, self.ctx.theme, self.ctx.u
         img = self.static_layer("array", self._draw_static)
         d = ImageDraw.Draw(img)
+        self.draw_kicker(img, t)
         if self.title:
             blit(img, self.title, self.title_xy, th.fg, _appear(t, 0.05), "tc")
         si = self.state_at(t)
@@ -765,7 +779,7 @@ class MeterScene(Scene):
     """A level that fills and drains: a bucket with liquid, a horizontal bar or a row of slots, following `steps`."""
 
     FIELDS: ClassVar[frozenset[str]] = frozenset({"title", "shape", "capacity", "start", "unit", "in_label",
-                                                  "out_label", "steps"})
+                                                  "out_label", "steps", "kicker"})
     STEP_FIELDS: ClassVar[frozenset[str]] = frozenset({"at", "level", "seconds", "text", "color"})
 
     def __init__(self, spec: dict[str, Any], ctx: Ctx):
@@ -809,6 +823,12 @@ class MeterScene(Scene):
         title_h = self.title.height + 36 * u if self.title else 0.0
         total = title_h + self.readout_h + 2 * self.zone + self.body_h + self.flash_h
         top = max(H * 0.05, centre_y(ctx) - total / 2)
+        # a kicker moves the title and the meter down by `shift`; the meter body gives that room up
+        self.kicker = make_kicker(ctx, spec, W - 2 * margin)
+        shift = kicker_shift(ctx, self.kicker, top)
+        self.body_h -= shift
+        top += shift
+        self.place_kicker(cx, top, True)
         self.title_xy = (cx, top)
         self.readout_y = top + title_h
         self.flash_y = self.readout_y + self.readout_h
@@ -942,6 +962,7 @@ class MeterScene(Scene):
     def frame(self, t: float) -> Image.Image:
         c, th, u = self.ctx, self.ctx.theme, self.ctx.u
         img = self.static_layer("meter", self._draw_static)
+        self.draw_kicker(img, t)
         if self.title:
             blit(img, self.title, self.title_xy, th.fg, _appear(t, 0.05), "tc")
         level = self.level_at(t)
@@ -1025,7 +1046,7 @@ def tree_levels(nodes: list[dict[str, Any]]) -> dict[str, int]:
 class TreeScene(Scene):
     """A top-down tree with an auto-layout. Nodes appear one by one; a `path` lights edges and nodes in sequence."""
 
-    FIELDS: ClassVar[frozenset[str]] = frozenset({"title", "nodes", "path"})
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"title", "nodes", "path", "kicker"})
     NODE_FIELDS: ClassVar[frozenset[str]] = frozenset({"id", "label", "parent", "at"})
     PATH_FIELDS: ClassVar[frozenset[str]] = frozenset({"at", "nodes", "text"})
 
@@ -1048,6 +1069,10 @@ class TreeScene(Scene):
         self.title = (ctx.block(str(spec["title"]), ctx.display, 56 * u * ctx.fs, W - 2 * margin, align="center")
                       if spec.get("title") else None)
         top = H * 0.06
+        # a kicker moves the title and everything under it down by `shift`; the tree's bottom stays put
+        self.kicker = make_kicker(ctx, spec, W - 2 * margin)
+        top += kicker_shift(ctx, self.kicker, top)
+        self.place_kicker(W / 2, top, True)
         title_h = self.title.height + 30 * u if self.title else 0.0
         self.title_xy = (W / 2, top)
         self.text_y = top + title_h + 36 * u * ctx.fs       # the path text sits between the title and the tree
@@ -1149,6 +1174,7 @@ class TreeScene(Scene):
         c, th, u = self.ctx, self.ctx.theme, self.ctx.u
         img = self.static_layer("tree", lambda im: None)
         d = ImageDraw.Draw(img)
+        self.draw_kicker(img, t)
         if self.title:
             blit(img, self.title, self.title_xy, th.fg, _appear(t, 0.05), "tc")
         lit_n, lit_e = self.lights(t)
@@ -1259,7 +1285,7 @@ def timeline_count(spec: dict[str, Any], t: float) -> int:
 class TimelineScene(Scene):
     """Events on an axis and a window that slides over them, with a live count of the events inside it."""
 
-    FIELDS: ClassVar[frozenset[str]] = frozenset({"title", "axis", "events", "window", "count"})
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"title", "axis", "events", "window", "count", "kicker"})
     AXIS_FIELDS: ClassVar[frozenset[str]] = frozenset({"from", "to", "unit", "ticks"})
     EVENT_FIELDS: ClassVar[frozenset[str]] = frozenset({"x", "at", "label", "color"})
     WINDOW_FIELDS: ClassVar[frozenset[str]] = frozenset({"at", "range", "text"})
@@ -1282,6 +1308,10 @@ class TimelineScene(Scene):
                       if spec.get("title") else None)
         # vertical stack: title, count, window text, then the event lanes above the axis
         top = H * 0.06
+        # a kicker moves the title and everything under it down by `shift`; the chart's bottom stays put
+        self.kicker = make_kicker(ctx, spec, W - 2 * margin)
+        top += kicker_shift(ctx, self.kicker, top)
+        self.place_kicker(W / 2, top, True)
         title_h = self.title.height + 30 * u if self.title else 0.0
         self.title_xy = (W / 2, top)
         self.count_y = top + title_h + 60 * u * ctx.fs
@@ -1354,6 +1384,7 @@ class TimelineScene(Scene):
     def frame(self, t: float) -> Image.Image:
         c, th, u = self.ctx, self.ctx.theme, self.ctx.u
         img = self.static_layer("timeline", self._draw_static)
+        self.draw_kicker(img, t)
         if self.title:
             blit(img, self.title, self.title_xy, th.fg, _appear(t, 0.05), "tc")
         wpx = self.window_px(t)
@@ -1600,7 +1631,7 @@ class GridScene(Scene):
     """A matrix of cells (`#` foreground, `.` card, `o` accent) that is revealed, stained, loses cells and gets them
     back, with a status line and outlines, following `grid_states`."""
 
-    FIELDS: ClassVar[frozenset[str]] = frozenset({"title", "cells", "steps", "seed"})
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"title", "cells", "steps", "seed", "kicker"})
     STEP_FIELDS: ClassVar[frozenset[str]] = frozenset({"at", "seconds", "radius", "per_cell", "order", "text", "color",
                                                        *GRID_ACTIONS})
 
@@ -1621,14 +1652,26 @@ class GridScene(Scene):
         title_h = self.title.height + 36 * u if self.title else 0.0
         self.band_h = 64 * u * ctx.fs if any(s.action == "status" for s in self.states) else 0.0
         bottom = H * (0.72 if ctx.vertical else 0.84)
-        side = min(W - 2 * margin, bottom - (H * 0.05 + title_h + self.band_h))
-        self.pitch = max(1, int((side - 48 * u) // max(self.rows, self.cols)))
-        self.gap = max(1, round(0.06 * self.pitch))
-        self.cell = max(1, self.pitch - self.gap)
-        pad = 24 * u
-        block_w, block_h = self.cols * self.pitch - self.gap, self.rows * self.pitch - self.gap
-        total = title_h + self.band_h + block_h + 2 * pad
-        top = min(max(H * 0.05, centre_y(ctx) - total / 2), max(H * 0.05, bottom - total))
+        self.kicker = make_kicker(ctx, spec, W - 2 * margin)
+        shift, limit = 0.0, 0.0
+        for attempt in range(8):
+            side = min(W - 2 * margin, bottom - (H * 0.05 + title_h + self.band_h) - shift)
+            self.pitch = max(1, int((side - 48 * u) // max(self.rows, self.cols)))
+            self.gap = max(1, round(0.06 * self.pitch))
+            self.cell = max(1, self.pitch - self.gap)
+            pad = 24 * u
+            block_w, block_h = self.cols * self.pitch - self.gap, self.rows * self.pitch - self.gap
+            total = title_h + self.band_h + block_h + 2 * pad
+            top = min(max(H * 0.05, centre_y(ctx) - total / 2), max(H * 0.05, bottom - total))
+            # A kicker moves the title and the grid down, and the grid gives that room up: the first pass finds where
+            # the grid would end without a kicker, and later passes shrink it until it ends no lower than that.
+            top_k = top + kicker_shift(ctx, self.kicker, top)
+            limit = limit if attempt else top + total
+            if top_k + total <= limit + 0.5:
+                break
+            shift += top_k + total - limit
+        top = top_k
+        self.place_kicker(W / 2, top, True)
         self.title_xy = (W / 2, top)
         self.band_cy = top + title_h + self.band_h / 2
         gx0, gy0 = int(round((W - block_w) / 2)), int(round(top + title_h + self.band_h + pad))
@@ -1926,6 +1969,7 @@ class GridScene(Scene):
         th = self.ctx.theme
         img = self.static_layer("grid", self._draw_static)
         d = ImageDraw.Draw(img)
+        self.draw_kicker(img, t)
         if self.title:
             blit(img, self.title, self.title_xy, th.fg, _appear(t, 0.05), "tc")
         self._draw_status(img, t)

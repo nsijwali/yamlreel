@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 from PIL import Image, ImageDraw, ImageFilter
 
 from .datascenes import ArrayScene, CtaScene, GridScene, MeterScene, TableScene, TimelineScene, TreeScene
-from .scenebase import Ctx, Scene, _appear
+from .scenebase import Ctx, Scene, _appear, kicker_shift, make_kicker
 from .shots import load_shot
 from .textkit import TextBlock, blit, ease_in_out, ease_out, lerp_color, make_block, split_count
 from .theme import Color, Theme, font
@@ -163,7 +163,7 @@ class ShotScene(Scene):
 
 
 class BulletsScene(Scene):
-    FIELDS: ClassVar[frozenset[str]] = frozenset({"items", "title", "stagger"})
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"items", "title", "stagger", "kicker"})
 
     def __init__(self, spec: dict[str, Any], ctx: Ctx):
         super().__init__(spec, ctx)
@@ -171,17 +171,27 @@ class BulletsScene(Scene):
         self.items = [str(i) for i in spec["items"]]
         textw = ctx.W - 2 * ctx.margin - 70 * u
         self.head = ctx.block(str(spec.get("title", "")).upper(), "sans_bold", 30 * u, ctx.W - 2 * ctx.margin, tracking=6 * u) if spec.get("title") else None
+        self.kicker = make_kicker(ctx, spec, ctx.W - 2 * ctx.margin)
         avail = ctx.H * (0.60 if ctx.vertical else 0.62)
         size = 56 * u * ctx.fs
         while True:
             blocks = [ctx.block(s, ctx.body, size, textw, spacing=1.25, min_size=size) for s in self.items]
             gap = size * 0.5
             total = sum(b.height for b in blocks) + gap * (len(blocks) - 1)
-            if total <= avail or size <= 26:
+            # a kicker moves the title (70u above the first item) down by `shift`, and the items give that room up
+            shift = kicker_shift(ctx, self.kicker, ctx.cy - total / 2 + (20 * u if self.head else 0) - 70 * u)
+            if total <= avail - shift or size <= 26:
                 break
             size -= 2
-        self.blocks, self.gap = blocks, gap
+        # at the floor the items may still not fit: the lower limit stays, so the kicker gets only the room that is left
+        room = max(0.0, avail - total)
+        if shift > room:
+            shift = room
+            ctx.warn("bullets: no room for the kicker; shorten the content or the kicker")
+        self.blocks, self.gap, self.shift = blocks, gap, shift
         self.total = total
+        self.y0 = ctx.cy - total / 2 + (20 * u if self.head else 0) + shift   # top of the first item
+        self.place_kicker(ctx.margin, self.y0 - 70 * u, False)
         self.th = th
         stagger = spec.get("stagger")
         self.stagger = float(stagger) if stagger is not None else None  # replaces the computed step when set
@@ -194,7 +204,8 @@ class BulletsScene(Scene):
         img = c.background()
         step = (self.stagger if self.stagger is not None
                 else min(1.1, max(0.4, (self.duration - 1.2) / max(1, len(self.items)))))
-        y = c.cy - self.total / 2 + (20 * c.u if self.head else 0)
+        y = self.y0
+        self.draw_kicker(img, t)
         if self.head:
             a = _appear(t, 0.1)
             blit(img, self.head, (c.margin, y - 70 * c.u), self.th.accent2, a, "tl")
@@ -303,7 +314,7 @@ def _colorize(line: str, th: Theme) -> list[Color]:
 
 
 class CodeScene(Scene):
-    FIELDS: ClassVar[frozenset[str]] = frozenset({"code", "highlight", "title"})
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"code", "highlight", "title", "kicker"})
 
     def __init__(self, spec: dict[str, Any], ctx: Ctx):
         super().__init__(spec, ctx)
@@ -316,6 +327,10 @@ class CodeScene(Scene):
         longest = max(len(l) for l in self.lines)
         size = min(40 * u, (self.pw - 2 * pad) / (longest * 0.602))
         size = min(size, (ctx.H * 0.6 - 2 * pad) / (len(self.lines) * 1.45))
+        self.kicker = make_kicker(ctx, spec, self.pw)
+        # a kicker moves the panel (and its title, 54u above it) down by `shift`; the code gives that room up
+        self.shift = kicker_shift(ctx, self.kicker, ctx.cy - (len(self.lines) * int(size) * 1.45 + 2 * pad) / 2 - 54 * u)
+        size = min(size, (ctx.H * 0.6 - self.shift - 2 * pad) / (len(self.lines) * 1.45))
         if size < 20 * u * 0.8:
             ctx.warn(f"code scene text is small ({int(size)}px); shorten lines or reduce line count")
         self.size = max(12, int(size))
@@ -324,6 +339,8 @@ class CodeScene(Scene):
         self.lh = int(self.size * 1.45)
         self.pad = int(pad)
         self.ph = self.lh * len(self.lines) + 2 * self.pad
+        self.top = int(ctx.cy - self.ph / 2 + self.shift)
+        self.place_kicker(ctx.margin, self.top - 54 * u, False)
         self.cols = [_colorize(l, ctx.theme) for l in self.lines]
         self.total_chars = sum(len(l) + 1 for l in self.lines)
 
@@ -332,7 +349,8 @@ class CodeScene(Scene):
         th = c.theme
         img = c.background()
         d = ImageDraw.Draw(img)
-        top = int(c.cy - self.ph / 2)
+        top = self.top
+        self.draw_kicker(img, t)
         if self.title:
             blit(img, self.title, (c.margin, top - 54 * c.u), th.accent2, _appear(t, 0.05), "tl")
         d.rounded_rectangle([c.margin, top, c.margin + self.pw, top + self.ph], int(20 * c.u), fill=th.card, outline=th.line, width=max(1, int(2 * c.u)))
@@ -361,7 +379,7 @@ _COLOR_NAMES = ("accent", "accent2", "fg", "muted")
 class DiagramScene(Scene):
     """Boxes and arrows that reveal in order, with flowing packets and state flashes."""
 
-    FIELDS: ClassVar[frozenset[str]] = frozenset({"nodes", "edges", "flash", "title", "node_size"})
+    FIELDS: ClassVar[frozenset[str]] = frozenset({"nodes", "edges", "flash", "title", "node_size", "kicker"})
     NODE_FIELDS: ClassVar[frozenset[str]] = frozenset({"id", "label", "x", "y", "vx", "vy", "at", "kind", "sub"})
     EDGE_FIELDS: ClassVar[frozenset[str]] = frozenset({"from", "to", "label", "at", "color", "bad", "dashed", "flow"})
     FLASH_FIELDS: ClassVar[frozenset[str]] = frozenset({"node", "at", "text", "color"})
@@ -404,22 +422,28 @@ class DiagramScene(Scene):
             tag = ctx.block(str(f["text"]), "sans_bold", (36 if ctx.vertical else 30) * u, W * 0.4, align="center") if f.get("text") else None
             self.flash.append(dict(node=self.nodes[f["node"]], at=float(f["at"]), color=color, tag=tag))
         self.title = ctx.block(str(spec["title"]), ctx.display, 56 * u * ctx.fs, W - 2 * ctx.margin, align="center") if spec.get("title") else None
+        # the title sits at 0.09 H; a kicker moves it down by `shift` (the nodes stay where they are)
+        self.kicker = make_kicker(ctx, spec, W - 2 * ctx.margin)
+        self.title_top = H * 0.09 + kicker_shift(ctx, self.kicker, H * 0.09)
+        self.place_kicker(W / 2, self.title_top, True)
 
     def layout_warnings(self, caption: tuple[float, float, float, float] | None) -> list[str]:
-        """The title and the caption pill each cover whatever node sits under them. Warn rather than move anything."""
+        """The title, the kicker and the caption pill each cover whatever node sits under them. Warn rather than move anything."""
         c = self.ctx
         out: list[str] = []
         areas: list[tuple[str, tuple[float, float, float, float]]] = []
         if self.title:
-            x0, y0 = c.W / 2 - self.title.width / 2, c.H * 0.09
+            x0, y0 = c.W / 2 - self.title.width / 2, self.title_top
             areas.append(("the title", (x0, y0, x0 + self.title.width, y0 + self.title.height)))
+        if self.kicker_box is not None:
+            areas.append(("the kicker", self.kicker_box))
         if caption is not None:
             areas.append(("the caption", caption))
         for name, (ax0, ay0, ax1, ay1) in areas:
             for nid, n in self.nodes.items():
                 if ax0 < n["x"] + n["w"] / 2 and n["x"] - n["w"] / 2 < ax1 and ay0 < n["y"] + n["h"] / 2 and n["y"] - n["h"] / 2 < ay1:
                     out.append(f"{name} overlaps diagram node {nid!r} ({n['label'][:30]!r}); move the node "
-                               f"{'down' if name == 'the title' else 'up'} ({'vy' if c.vertical else 'y'})")
+                               f"{'up' if name == 'the caption' else 'down'} ({'vy' if c.vertical else 'y'})")
         return out
 
     def _col(self, name: str, alpha: float = 1.0) -> tuple[int, int, int, int]:
@@ -513,7 +537,8 @@ class DiagramScene(Scene):
 
         # text (drawn at 1x on the composite for crisp glyphs)
         if self.title:
-            blit(canvas, self.title, (c.W / 2, c.H * 0.09), th.fg, _appear(t, 0.05), "tc")
+            blit(canvas, self.title, (c.W / 2, self.title_top), th.fg, _appear(t, 0.05), "tc")
+        self.draw_kicker(canvas, t)
         for n in self.nodes.values():
             a = ease_out((t - n["appear"]) / 0.4)
             blit(canvas, n["blk"], (n["x"], n["y"]), th.fg, a, "mc")
