@@ -244,6 +244,24 @@ without narration. A summary goes to stderr: `9 scenes, 7 narrated, ~182 words` 
 `cache-stampede-45s` is narrated; add `--no-voice` to render it with music only. For more starting points, run
 `yamlreel init` with the `explainer`, `system-design`, `project` or `code-tip` template.
 
+## Rendering part of a video
+
+`yamlreel render spec.yaml --only 3` (also `--only 2,4` or `--only 2-4`; scenes are numbered from 0, as in `script` and
+`check-voice`) renders just those scenes, cut out of the full video, so editing one scene does not mean a full re-render.
+The whole plan is still made, so scene lengths, transitions inside the slice, the music and the narration timing are
+exactly those of the full video; only the frames and the audio outside the chosen scenes are left out. Consecutive scenes
+form one window, windows play back to back with hard cuts, and each window starts with a cut, so no scene you did not
+choose shows. `--preview` and `--format all` work as usual.
+
+The files get the scene numbers in their names and the full video's files are never touched: `video-scenes-2-4.mp4`,
+`contact-scenes-2-4.png` (only the chosen scenes' rows, labelled with their full-video numbers and times) and
+`subtitles-scenes-2-4.srt` (if the video has an SRT; times are slice times). Two windows are named like `1_5`. No poster
+and no `share-copy.txt` are written, because they describe the full video, and no title or end card is added. A note on
+stderr says what was cut, for example `only: scenes 2-4 of 0-7, 12.40-21.95s of the 38.20s video (9.55s)`.
+
+Narration is read from the cache and only missing clips are synthesised, so after one render, editing scene 3 and running
+`--only 3` synthesises just scene 3. With no voice server, or `--no-voice`, the same rules apply as for a full render.
+
 ## Commands
 
 | Command | What it does |
@@ -254,7 +272,7 @@ without narration. A summary goes to stderr: `9 scenes, 7 narrated, ~182 words` 
 | `yamlreel script <spec> [--format md\|text] [--out FILE] [--force]` | Prints every scene's kicker, title, caption and narration for review, without rendering; see [Script sheet](#script-sheet). |
 | `yamlreel check-voice <spec> [--out DIR] [--model NAME]` | Transcribes the cached narration clips and compares them with the narration text; see [Checking the voice](#checking-the-voice). |
 | `yamlreel validate <spec>` | Checks a spec and prints its scene count, length and how many scenes are narrated and subtitled, without rendering. |
-| `yamlreel render <spec>` | Renders. Useful flags: `--preview`, `--out DIR`, `--format vertical\|landscape\|square\|all`, `--music koto\|ambient\|lofi\|pulse\|piano\|none\|file.mp3`, `--fps N`, `--contact-frames N`, `--no-voice`, `--voice-url URL`, `--read-screen`, `--allow-path DIR`, `--allow-private-hosts`. |
+| `yamlreel render <spec>` | Renders. Useful flags: `--preview`, `--out DIR`, `--format vertical\|landscape\|square\|all`, `--music koto\|ambient\|lofi\|pulse\|piano\|none\|file.mp3`, `--fps N`, `--contact-frames N`, `--only N,A-B`, `--no-voice`, `--voice-url URL`, `--read-screen`, `--allow-path DIR`, `--allow-private-hosts`. |
 | `yamlreel config init [--user]` / `config show` | Writes a starter config, or shows the merged settings and the files they came from. |
 | `yamlreel music --style lofi --seconds 30 --out track.wav` | Generates a music track on its own (`--style`, `--bpm`, `--root`, `--scale`, `--seed`; the style supplies the defaults). |
 
@@ -448,6 +466,7 @@ line, never from a spec or project config you downloaded: `allow_paths`, `allow_
 ## Unreleased
 
 - **New:** spec and outline errors now start with `file:line:` (`error: spec.yaml:12: scenes[0].titel: ...`), so editors can jump to the mistake ([Writing a spec](#writing-a-spec)). Scripts that parse the old `error: <path>` start should expect the location first.
+- **New:** `yamlreel render --only N,A-B` renders only some scenes, cut out of the full video, into `video-scenes-<N>.mp4` beside the full outputs ([Rendering part of a video](#rendering-part-of-a-video)).
 
 ## New in 0.3.2
 

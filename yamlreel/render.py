@@ -139,6 +139,7 @@ class Timeline:
             ids = sorted(self._cap_from)
             self.ctx.warn(f"scene{'s' if len(ids) != 1 else ''} {', '.join(map(str, ids[:8]))}{', ...' if len(ids) > 8 else ''}: "
                           "the caption appears after the narration ends, so it does not cover the subtitles")
+        self.cut_in: set[int] = set()  # scenes that begin with a hard cut whatever their transition (`render --only`)
         self._current = -1  # the scene frame_at last drew; scenes far from it give their cached layers back
         self._last: dict[int, Image.Image] = {}  # at most one entry: the last frame of the scene before this one
         self._wm = self._make_watermark(spec.get("watermark"))
@@ -253,7 +254,7 @@ class Timeline:
                     other.release()
         img = self._scene_frame(i, lt)
         tr = self._transitions[i]
-        if i > 0 and tr["type"] != "cut" and lt < tr["seconds"]:
+        if i > 0 and i not in self.cut_in and tr["type"] != "cut" and lt < tr["seconds"]:
             img = self._transition(tr["type"], self._last_frame(i - 1), img, lt / tr["seconds"])
         if self._wm:  # constant on every frame, including transitions and the poster
             rgb, mask, xy = self._wm
@@ -301,22 +302,24 @@ def contact_fracs(frames: int | None) -> tuple[float, ...]:
 
 
 def contact_sheet(tl: Timeline, path: Path, cols: int | None = None, tile_w: int | None = None,
-                  fracs: tuple[float, ...] = CONTACT_DEFAULT_FRACS) -> Path:
-    """Stills of every scene at the `fracs` points, each tile pasted into a sheet of the final size as it is
-    rendered. By default each scene has one row of len(fracs) tiles; the default two stills are four tiles across, two scenes
-    per row."""
+                  fracs: tuple[float, ...] = CONTACT_DEFAULT_FRACS, scenes: list[int] | None = None) -> Path:
+    """Stills of every scene (or only the scene numbers in `scenes`) at the `fracs` points, each tile pasted into a
+    sheet of the final size as it is rendered. By default each scene has one row of len(fracs) tiles; the default
+    two stills are four tiles across, two scenes per row. Labels carry the full-video scene number and time."""
     if cols is None:
         cols = CONTACT_COLS if fracs == CONTACT_DEFAULT_FRACS else len(fracs)
     if tile_w is None:
         tile_w = 480 if cols <= 4 else 320
     tile_h = int(tile_w * tl.ctx.H / tl.ctx.W)
-    n_tiles = len(tl.scenes) * len(fracs)
+    chosen = list(range(len(tl.scenes))) if scenes is None else scenes
+    n_tiles = len(chosen) * len(fracs)
     label_h = 24
     sheet = Image.new("RGB", (cols * tile_w, ((n_tiles + cols - 1) // cols) * (tile_h + label_h)), (16, 16, 16))
     d = ImageDraw.Draw(sheet)
     f = font("sans", 15)
     n = 0
-    for i, sc in enumerate(tl.scenes):
+    for i in chosen:
+        sc = tl.scenes[i]
         for frac in fracs:
             t = tl.starts[i] + sc.duration * frac
             x, y = (n % cols) * tile_w, (n // cols) * (tile_h + label_h)
@@ -325,6 +328,53 @@ def contact_sheet(tl: Timeline, path: Path, cols: int | None = None, tile_w: int
             n += 1
     sheet.save(path)
     return path
+
+
+def scene_windows(only: list[int]) -> list[tuple[int, int]]:
+    """Runs of consecutive scene numbers in `only` (sorted, unique) as (first, last) pairs: [1, 2, 3, 5] -> [(1, 3), (5, 5)]."""
+    out: list[tuple[int, int]] = []
+    for i in only:
+        if out and out[-1][1] == i - 1:
+            out[-1] = (out[-1][0], i)
+        else:
+            out.append((i, i))
+    return out
+
+
+def only_label(windows: list[tuple[int, int]]) -> str:
+    """The file-name part for a set of windows: '2-4', '1_5', '0-1_3'."""
+    return "_".join(str(a) if a == b else f"{a}-{b}" for a, b in windows)
+
+
+def _check_only(only: list[int], n_scenes: int) -> None:
+    if not only or only != sorted(set(only)):
+        raise RenderError("only: scene numbers must be a non-empty, sorted list without duplicates")
+    for i in only:
+        if not 0 <= i < n_scenes:
+            raise RenderError(f"only: scene {i} does not exist; scenes are numbered 0 to {n_scenes - 1}")
+
+
+def _slice_cues(cues: list[subs_mod.Cue], frame_runs: list[tuple[int, int]], fps: int) -> list[subs_mod.Cue]:
+    """The cues inside each window, moved to slice time (windows play back to back) and clipped to the window."""
+    out: list[subs_mod.Cue] = []
+    shift = 0.0
+    for n0, n1 in frame_runs:
+        a, b = n0 / fps, n1 / fps
+        for c in cues:
+            if c.end > a and c.start < b:
+                out.append(subs_mod.Cue(max(c.start, a) - a + shift, min(c.end, b) - a + shift, c.words, c.keywords))
+        shift += b - a
+    return out
+
+
+def _cut_audio(label: str, spans: list[tuple[float, float]]) -> str:
+    """Filter-graph text that pads the audio on `label` and plays only the (start, end) spans, one after another."""
+    k = len(spans)
+    outs = "".join(f"[s{n}]" for n in range(k))
+    parts = [f"[{label}]apad,asplit={k}{outs}"]
+    parts += [f"[s{n}]atrim=start={a:.6f}:end={b:.6f},asetpts=PTS-STARTPTS[t{n}]" for n, (a, b) in enumerate(spans)]
+    parts.append("".join(f"[t{n}]" for n in range(k)) + f"concat=n={k}:v=0:a=1[out]")
+    return ";".join(parts)
 
 
 def energy_sections(spec: dict[str, Any], starts: list[float], durations: list[float]) -> list[tuple[float, float, int]]:
@@ -429,15 +479,19 @@ def ffmpeg_exe() -> str | None:
 def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: float = 1.0,
            music_override: str | None = None, contact: bool = True,
            runtime: Runtime | None = None, n_formats: int = 1,
-           contact_frames: int | None = None) -> dict[str, Any]:
+           contact_frames: int | None = None, only: list[int] | None = None) -> dict[str, Any]:
     """Render one format. `n_formats` is how many formats this run renders in all, for the frame budget.
-    `contact_frames` sets how many stills per scene the contact sheet has (default: two)."""
+    `contact_frames` sets how many stills per scene the contact sheet has (default: two). `only` (sorted, unique
+    scene numbers) renders just those scenes, cut out of the full video: same plan, partial frames; the outputs get
+    `-scenes-<label>` names and no poster is written."""
     ffmpeg = ffmpeg_exe()
     if ffmpeg is None:
         raise RenderError("ffmpeg not found. Install it (macOS: brew install ffmpeg; Debian/Ubuntu: sudo apt install "
                           "ffmpeg) or run: pip install imageio-ffmpeg")
     if not 1 <= fps <= 60:
         raise RenderError("fps must be between 1 and 60")
+    if only is not None:
+        _check_only(only, len(spec["scenes"]))
     rt = runtime or Runtime.for_spec(spec)
     spec = {**spec, "scenes": [dict(sc) for sc in spec["scenes"]]}  # narration stretches scene lengths: work on a copy
     if music_override in music_mod.STYLE_DEFAULTS or music_override == "none":
@@ -466,28 +520,43 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         if total_seconds > limit:
             raise RenderError(f"after narration and beat snapping the video is {total_seconds:.1f}s; "
                               f"the limit is {limit:g}s (limits.max_seconds)")
+        starts_plan = [sum(durations[:k]) for k in range(len(durations))]
+        windows = scene_windows(only) if only is not None else []
+        spans = [(starts_plan[a], starts_plan[b] + durations[b]) for a, b in windows]   # seconds in the full video
         try:
-            check_frame_budget(total_seconds, fps, n_formats)
+            check_frame_budget(sum(b - a for a, b in spans) if only is not None else total_seconds, fps, n_formats)
         except SpecError as e:
             raise RenderError(str(e)) from e
         tl = Timeline(spec, fmt, cache, scale, rt, durations=durations, words=words)
         tl.ctx.warnings.extend(w for w in sub_warnings if w not in tl.ctx.warnings)
         total = tl.total
+        tag = f"-scenes-{only_label(windows)}" if only is not None else ""
+        tl.cut_in = {a for a, _ in windows}
+        # Frames of each window: the full video's indices ceil(a*fps) .. ceil(b*fps)-1; a full render is one window.
+        frame_runs = ([(math.ceil(a * fps), min(math.ceil(b * fps), int(round(total * fps)))) for a, b in spans] if only is not None
+                      else [(0, int(round(total * fps)))])
+        n_frames = sum(n1 - n0 for n0, n1 in frame_runs)
+        out_seconds = n_frames / fps if only is not None else total
         srt = None
+        srt_path = out / f"subtitles{tag}.srt"
         if words and (spec.get("subtitles") or {}).get("srt"):
             cues = tl.subtitle_cues()
-            srt = out / "subtitles.srt"
-            srt.write_text(subs_mod.srt_text(cues, bool(spec["subtitles"].get("uppercase"))), encoding="utf-8")
-        else:
-            (out / "subtitles.srt").unlink(missing_ok=True)   # a file from an earlier run would be taken for this one's
+            if only is not None:
+                cues = _slice_cues(cues, frame_runs, fps)
+            if cues or only is None:
+                srt = srt_path
+                srt.write_text(subs_mod.srt_text(cues, bool(spec["subtitles"].get("uppercase"))), encoding="utf-8")
+        if srt is None:
+            srt_path.unlink(missing_ok=True)   # a file from an earlier run would be taken for this one's
         narration = voice_mod.write_wav(work / "narration.wav", voice_mod.build_track(clips, tl.starts, total)) if clips else None
         duck = None
         if clips and (spec.get("voiceover") or {}).get("duck"):
             duck = (speech_regions(clips, tl.starts), float(spec["voiceover"].get("music_level", 0.35)))
         audio = _prepare_audio(spec, total, work, music_override, rt, energy_sections(spec, tl.starts, durations),
                                duck, ffmpeg)
-        poster = tl.frame_at(tl.poster_time())
-        poster.convert("RGB").save(out / "poster.jpg", quality=92)
+        poster = tl.frame_at(tl.poster_time())   # also checks poster.scene
+        if only is None:
+            poster.convert("RGB").save(out / "poster.jpg", quality=92)
 
         W, H = tl.ctx.W, tl.ctx.H
         cmd = [ffmpeg, "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
@@ -504,22 +573,33 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
             fade_out = max(0.0, total - 2.0)
             music_f = (f"atrim=0:{total:.3f},asetpts=PTS-STARTPTS,volume={{vol}},"
                        f"afade=t=in:st=0:d=0.8,afade=t=out:st={fade_out:.3f}:d=2.0")
+            cut = _cut_audio("a", [(n0 / fps, n1 / fps) for n0, n1 in frame_runs]) if only is not None else None
             if audio and narration:
                 level = float(spec["voiceover"].get("music_level", 0.35))  # music sits under the voice
                 graph = (f"[1:a]{music_f.format(vol=vol if duck else vol * level)}[m];"
                          f"[2:a]atrim=0:{total:.3f},asetpts=PTS-STARTPTS[n];"
                          "[m][n]amix=inputs=2:duration=longest:normalize=0[a]")
-                cmd += ["-filter_complex", graph, "-map", "0:v", "-map", "[a]"]
+                if cut:
+                    graph += ";" + cut
+                cmd += ["-filter_complex", graph, "-map", "0:v", "-map", "[out]" if cut else "[a]"]
             elif audio:
-                cmd += ["-af", music_f.format(vol=vol)]
+                if cut:
+                    cmd += ["-filter_complex", f"[1:a]{music_f.format(vol=vol)}[a];{cut}", "-map", "0:v", "-map", "[out]"]
+                else:
+                    cmd += ["-af", music_f.format(vol=vol)]
             else:
                 # Narration only: never fade the speech; just a tiny fade after it to avoid a click at the end.
                 speech_end = max((tl.starts[i] + voice_mod.NARRATION_LEAD + len(c) / voice_mod.SAMPLE_RATE
                                   for i, c in clips.items()), default=0.0)
                 end_fade = max(speech_end, total - 0.05)  # the fade starts after the last word, never inside it
-                cmd += ["-af", f"atrim=0:{total:.3f},asetpts=PTS-STARTPTS,afade=t=out:st={end_fade:.3f}:d=0.05"]
+                fade = f"atrim=0:{total:.3f},asetpts=PTS-STARTPTS,afade=t=out:st={end_fade:.3f}:d=0.05"
+                if cut:
+                    cmd += ["-filter_complex", f"[1:a]{fade}[a];{cut}", "-map", "0:v", "-map", "[out]"]
+                else:
+                    cmd += ["-af", fade]
             cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
-        cmd += ["-movflags", "+faststart", "-t", f"{total:.3f}", str(out / "video.mp4")]
+        video = out / f"video{tag}.mp4"
+        cmd += ["-movflags", "+faststart", "-t", f"{out_seconds:.3f}", str(video)]
         errlog = open(work / "ffmpeg.log", "wb")
         try:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=errlog)
@@ -527,10 +607,11 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
             errlog.close()
             raise RenderError(f"cannot run ffmpeg at {ffmpeg}: {e}") from e
         try:
-            n_frames = int(round(total * fps))
-            for n in range(n_frames):
-                img = poster if n == 0 else tl.frame_at(n / fps)  # poster doubles as frame 0 (thumbnail)
-                proc.stdin.write(img.convert("RGB").tobytes())
+            for (n0, n1), (a, _) in zip(frame_runs, spans or [(0.0, total)]):
+                for n in range(n0, n1):
+                    # the poster doubles as frame 0 (thumbnail); a slice has no poster
+                    img = poster if n == 0 and only is None else tl.frame_at(max(n / fps, a))
+                    proc.stdin.write(img.convert("RGB").tobytes())
             proc.stdin.close()
         except BrokenPipeError:
             pass
@@ -541,6 +622,7 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         sheet = None
         if contact:
             fracs = contact_fracs(contact_frames)
-            sheet = contact_sheet(tl, out / "contact.png", fracs=fracs)
-    return {"video": out / "video.mp4", "poster": out / "poster.jpg", "contact": sheet, "srt": srt,
-            "seconds": total, "warnings": tl.warnings, "size": (W, H)}
+            sheet = contact_sheet(tl, out / f"contact{tag}.png", fracs=fracs, scenes=only)
+    return {"video": video, "poster": None if only is not None else out / "poster.jpg", "contact": sheet, "srt": srt,
+            "seconds": out_seconds, "full_seconds": total, "windows": [(a, b, s0, s1) for (a, b), (s0, s1) in zip(windows, spans)],
+            "warnings": tl.warnings, "size": (W, H)}
