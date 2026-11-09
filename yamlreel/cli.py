@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
 from importlib import resources
@@ -17,7 +18,7 @@ from . import voice as voice_mod
 from . import voicecheck
 from .config import CONFIG_FILENAME, config_base, Config, ConfigError, load_config, user_config_path
 from .voice import VoiceError, VoiceServer
-from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, render, share_copy
+from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, only_label, render, share_copy
 from .safety import UnsafeInput, resolve_local
 from .shots import CaptureError
 from .specs import FORMATS, MUSIC_STYLES, SpecError, check_frame_budget, load_spec
@@ -131,6 +132,33 @@ def cmd_script(args: argparse.Namespace) -> int:
     return 0
 
 
+_ONLY_ITEM = re.compile(r"([0-9]+)(?:-([0-9]+))?")  # ASCII digits only: \d would also accept other scripts' digits
+
+
+def parse_only(text: str, n: int) -> list[int]:
+    """`--only` text ('3', '2,4', '2-4', '1,3-5') as sorted unique scene numbers, for a video of `n` scenes."""
+    span = f"scenes are numbered 0 to {n - 1}"
+    picked: set[int] = set()
+    for item in text.split(","):
+        m = _ONLY_ITEM.fullmatch(item.strip())
+        if m is None:
+            raise SpecError(f"--only: '{item.strip()}' is not a scene number or range; use 3, 2,4 or 2-4 ({span})")
+        lo, hi = int(m[1]), int(m[2] if m[2] is not None else m[1])
+        if hi < lo:
+            raise SpecError(f"--only: {lo}-{hi} is backwards; write {hi}-{lo}")
+        if hi >= n:
+            raise SpecError(f"--only: scene {hi} does not exist; {span}")
+        picked.update(range(lo, hi + 1))
+    return sorted(picked)
+
+
+def _only_note(windows: list[tuple[int, int, float, float]], n_scenes: int, full: float) -> str:
+    scenes = " + ".join(only_label([(a, b)]) for a, b, _, _ in windows)
+    times = " + ".join(f"{s0:.2f}-{s1:.2f}s" for _, _, s0, s1 in windows)
+    return (f"only: scenes {scenes} of 0-{n_scenes - 1}, {times} of the {full:.2f}s video "
+            f"({sum(s1 - s0 for _, _, s0, s1 in windows):.2f}s)")
+
+
 def cmd_render(args: argparse.Namespace) -> int:
     cfg = _config(args)
     spec = load_spec(args.spec, cfg)
@@ -149,7 +177,9 @@ def cmd_render(args: argparse.Namespace) -> int:
     if args.fps is not None and not 1 <= args.fps <= 60:
         raise SpecError("--fps must be an integer between 1 and 60")
     fps = 12 if args.preview else (args.fps or int(spec["fps"]))
-    check_frame_budget(sum(s["seconds"] for s in spec["scenes"]), fps, len(formats))
+    only = parse_only(args.only, len(spec["scenes"])) if args.only is not None else None
+    chosen = spec["scenes"] if only is None else [spec["scenes"][i] for i in only]
+    check_frame_budget(sum(s["seconds"] for s in chosen), fps, len(formats))
     if args.contact_frames is not None and not 1 <= args.contact_frames <= MAX_CONTACT_FRAMES:
         raise SpecError(f"--contact-frames must be an integer between 1 and {MAX_CONTACT_FRAMES}")
     rt = _runtime(spec, cfg, args.music, no_voice=args.no_voice)
@@ -157,16 +187,20 @@ def cmd_render(args: argparse.Namespace) -> int:
     for fmt in formats:
         print(f"rendering {fmt} ...", flush=True)
         results[fmt] = render(spec, fmt, out_dir, fps=fps, scale=scale, music_override=args.music, contact=True, runtime=rt,
-                               n_formats=len(formats), contact_frames=args.contact_frames)
-    total = next(iter(results.values()))["seconds"]
-    text, warns = share_copy(spec, total, formats)
-    (out_dir / "share-copy.txt").write_text(text, encoding="utf-8")
+                               n_formats=len(formats), contact_frames=args.contact_frames, only=only)
+    first = next(iter(results.values()))
+    text, warns = share_copy(spec, first["full_seconds"], formats)
+    if only is None:
+        (out_dir / "share-copy.txt").write_text(text, encoding="utf-8")
+    else:
+        print(_only_note(first["windows"], len(spec["scenes"]), first["full_seconds"]), file=sys.stderr)
     for fmt, r in results.items():
         print(f"  {fmt}: {r['video']} ({r['seconds']:.1f}s, {r['size'][0]}x{r['size'][1]})")
         warns += [f"{fmt}: {w}" for w in r["warnings"]]
     for w in warns:
         print(f"  warning: {w}", file=sys.stderr)
-    print(f"share copy: {out_dir / 'share-copy.txt'}")
+    if only is None:
+        print(f"share copy: {out_dir / 'share-copy.txt'}")
     return 0
 
 
@@ -289,6 +323,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--fps", type=int, help="frames per second, 1-60 (default: fps from config)")
     r.add_argument("--no-voice", action="store_true",
                    help="skip all narration (music only); no text-to-speech server needed")
+    r.add_argument("--only", metavar="N,A-B",
+                   help="render only these scenes (0-based, e.g. 3, 2,4 or 2-4), cut out of the full video; "
+                        "writes video-scenes-<N>.mp4 beside the full outputs")
     r.add_argument("--preview", action="store_true", help="half size, 12 fps: fast look at timing and layout")
     r.add_argument("--contact-frames", type=int, metavar="N",
                    help="stills per scene on the contact sheet, 1-8 (default: 2); one row per scene")
