@@ -39,6 +39,15 @@ TRIM_DB = 40.0  # quiet means this far under the clip's own loudest frame
 TRIM_PAD = 0.03  # seconds of quiet kept next to speech so word edges are not clipped
 TRIM_MAX_GAP = 0.3  # an inner quiet gap longer than this is shortened ...
 TRIM_KEEP_GAP = 0.15  # ... to this
+DEBREATH_HOP = 0.01  # seconds between analysis frames when looking for breaths
+DEBREATH_WIN = 0.03  # seconds per analysis frame
+DEBREATH_FLOOR_DB = -58.0  # quieter than this (full scale) is silence, which trim handles, not a breath
+DEBREATH_CEIL_DB = 17.0  # a breath is at least this far under the clip's 95th-percentile frame level
+DEBREATH_VOICED = 0.45  # normalised autocorrelation at or above this over 60-400 Hz means voiced (speech)
+DEBREATH_PITCH_HZ = (60, 400)  # lag range searched for voicing
+DEBREATH_MIN_MS = 90  # a quiet unvoiced run shorter than this is kept (consonants, word edges)
+DEBREATH_FADE_MS = 12  # fade in/out around a silenced run
+DEBREATH_CHUNK = 1024  # frames per FFT batch, to bound memory
 CACHE_KEY_VERSION = 2  # bump when what a cached clip depends on changes; old files are then never read
 
 
@@ -240,6 +249,54 @@ def trim_silence(samples: np.ndarray, speed: float = 1.0) -> np.ndarray:
     return np.concatenate(pieces)
 
 
+def debreath(samples: np.ndarray) -> np.ndarray:
+    """Replace breaths with silence, in place: the clip keeps its length (shortening is trim's job).
+
+    A breath is a run of at least DEBREATH_MIN_MS of frames that are unvoiced (low autocorrelation over the
+    pitch range) and quiet, but not silent: above DEBREATH_FLOOR_DB and DEBREATH_CEIL_DB under the clip's own
+    95th-percentile level, so quiet and loud voices both work. Runs get DEBREATH_FADE_MS fades on each side.
+    A clip with no breath (or no frames) is returned as it came."""
+    hop, win = int(DEBREATH_HOP * SAMPLE_RATE), int(DEBREATH_WIN * SAMPLE_RATE)
+    n = (len(samples) - win) // hop if len(samples) >= win else 0
+    if n <= 0:
+        return samples
+    x = np.asarray(samples, dtype=np.float32)
+    frames = np.lib.stride_tricks.sliding_window_view(x, win)[::hop][:n]
+    energy = np.einsum("ij,ij->i", frames, frames, dtype=np.float64)
+    db = 10 * np.log10(energy / win + 1e-12)
+    peak = float(np.percentile(db, 95))
+    cand = (db > DEBREATH_FLOOR_DB) & (db < peak - DEBREATH_CEIL_DB)
+    idx = np.flatnonzero(cand)  # only these need the (costly) voicing check
+    if not len(idx):
+        return samples
+    lo, hi = SAMPLE_RATE // DEBREATH_PITCH_HZ[1], SAMPLE_RATE // DEBREATH_PITCH_HZ[0]
+    nfft = 1 << (2 * win - 1).bit_length()
+    voiced = np.zeros(n, dtype=bool)
+    for a in range(0, len(idx), DEBREATH_CHUNK):
+        sel = idx[a:a + DEBREATH_CHUNK]
+        f = frames[sel].astype(np.float64)
+        f -= f.mean(axis=1, keepdims=True)
+        spec = np.fft.rfft(f, nfft, axis=1)
+        r = np.fft.irfft(spec.real ** 2 + spec.imag ** 2, nfft, axis=1)[:, :hi]
+        voiced[sel] = r[:, lo:hi].max(axis=1) / (r[:, 0] + 1e-12) >= DEBREATH_VOICED
+    cand &= ~voiced
+    edges = np.diff(np.concatenate(([0], cand.astype(np.int8), [0])))
+    starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+    keep = (ends - starts) * DEBREATH_HOP * 1000 >= DEBREATH_MIN_MS
+    if not keep.any():
+        return samples
+    out = x.copy()
+    fade = int(DEBREATH_FADE_MS / 1000 * SAMPLE_RATE)
+    for i, j in zip(starts[keep], ends[keep]):
+        a, b = int(i) * hop, min((int(j) - 1) * hop + win, len(out))   # j is the first frame after the run
+        out[a:b] = 0.0
+        if a - fade >= 0:
+            out[a - fade:a] *= np.linspace(1, 0, fade, dtype=np.float32)
+        if b + fade <= len(out):
+            out[b:b + fade] *= np.linspace(0, 1, fade, dtype=np.float32)
+    return out
+
+
 def change_speed(samples: np.ndarray, speed: float) -> np.ndarray:
     """Play the clip `speed` times as fast without changing its pitch (ffmpeg `atempo`)."""
     from . import render  # late: render imports this module
@@ -262,8 +319,11 @@ def change_speed(samples: np.ndarray, speed: float) -> np.ndarray:
 
 
 def process_clip(samples: np.ndarray, vo: dict[str, Any]) -> np.ndarray:
-    """Apply voiceover.trim, then voiceover.speed. A 1.0 speed leaves the audio alone and needs no ffmpeg."""
+    """Apply voiceover.debreath, then voiceover.trim, then voiceover.speed. Debreath silences breaths in place
+    so that trim can then cut them. A 1.0 speed leaves the audio alone and needs no ffmpeg."""
     speed = float(vo.get("speed", 1.0))
+    if vo.get("debreath") and len(samples):
+        samples = debreath(samples)
     if vo.get("trim") and len(samples):
         samples = trim_silence(samples, speed)
     if speed != 1.0 and len(samples):

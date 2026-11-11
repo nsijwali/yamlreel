@@ -1259,11 +1259,11 @@ def _watermark(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, 
 def _voiceover(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any]:
     v = v or {}
     vo = dict(_mapping(path, v))
-    _no_unknown(path, vo, ("voice", "language", "gap", "music_level", "read_screen", "duck", "speed", "trim"), "voiceover")
+    _no_unknown(path, vo, ("voice", "language", "gap", "music_level", "read_screen", "duck", "speed", "trim", "debreath"), "voiceover")
     for k in ("voice", "language"):
         if k in vo and (not isinstance(vo[k], str) or not vo[k].strip() or len(vo[k]) > 200):
             raise SpecError(f"{path}.{k} must be a short string")
-    for k in ("read_screen", "duck", "trim"):
+    for k in ("read_screen", "duck", "trim", "debreath"):
         if k in vo:
             _bool(f"{path}.{k}", vo[k])
     if "speed" in vo:
