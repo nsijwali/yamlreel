@@ -288,7 +288,7 @@ def debreath(samples: np.ndarray) -> np.ndarray:
     out = x.copy()
     fade = int(DEBREATH_FADE_MS / 1000 * SAMPLE_RATE)
     for i, j in zip(starts[keep], ends[keep]):
-        a, b = int(i) * hop, min(int(j) * hop + win, len(out))
+        a, b = int(i) * hop, min((int(j) - 1) * hop + win, len(out))   # j is the first frame after the run
         out[a:b] = 0.0
         if a - fade >= 0:
             out[a - fade:a] *= np.linspace(1, 0, fade, dtype=np.float32)

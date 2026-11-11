@@ -8,8 +8,20 @@ from yamlreel import voice as voice_mod
 from yamlreel.specs import SpecError, validate
 from yamlreel.voice import SAMPLE_RATE
 
-# a run may reach one analysis window into neighbouring speech, then fades
+# a run may reach one analysis window into neighbouring speech at its start, then fades
 FADE = int((voice_mod.DEBREATH_FADE_MS / 1000 + voice_mod.DEBREATH_WIN) * SAMPLE_RATE)
+
+
+def test_speech_right_after_a_breath_keeps_its_first_samples():
+    # the run ends with the last breath frame: nothing after that frame is zeroed, only faded
+    a, n = tone(1.0), int(0.2 * SAMPLE_RATE)
+    clip = np.concatenate([a, noise(0.2), tone(1.0)])
+    out = voice_mod.debreath(clip)
+    end = len(a) + n
+    fade = int(voice_mod.DEBREATH_FADE_MS / 1000 * SAMPLE_RATE)
+    gap = int(0.003 * SAMPLE_RATE)   # the breath frames may end up to one hop before the tone starts
+    assert np.abs(out[end + gap:end + fade]).max() > 0.0
+    assert np.array_equal(out[end + fade:], clip[end + fade:])
 
 
 def tone(seconds, amp=0.3, hz=220):
