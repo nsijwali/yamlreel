@@ -327,7 +327,7 @@ music: {style: koto | ambient | lofi | pulse | piano | none | path/to.mp3, bpm, 
 transition: fade              # fade | slide | zoom | cut, or {type: slide, seconds: 0.35}; default fade, 0.25 s
 watermark: "Your Name"        # or {text|image: logo.png, position: top-left|top-right|bottom-left|bottom-right, opacity: 0.75, size: 30}
 poster: {scene: 0, at: 2.6}   # optional; default is the first scene, just before it ends
-voiceover: {voice, language, gap, music_level, read_screen, duck: false, speed: 1.0, trim: false}   # duck: true lowers the music to music_level only while a voice speaks; speed 0.8 to 1.3; trim: true cuts silence
+voiceover: {voice, language, gap, music_level, read_screen, duck: false, speed: 1.0, trim: false, debreath: false}   # duck: true lowers the music to music_level only while a voice speaks; speed 0.8 to 1.3; trim: true cuts silence; debreath: true silences breaths
 subtitles: {style: karaoke | pop | plain, words: 4, position: lower | middle, size: 1.0, uppercase: false, keywords: [], numbers: true, srt: false}   # or `true`; default off
 scenes: [...]                 # every scene also takes: step (badge label), transition, subtitles (false opts out), keywords (extra subtitle keywords), narration_words (JSON of exact word times), energy (low|mid|high: how many music layers play)
 ```
@@ -353,6 +353,7 @@ scenes: [...]                 # every scene also takes: step (badge label), tran
 - **Music styles:** `koto` (default, 72 bpm, D hirajoshi), `ambient` (60, C major: pad chords, a bell motif, a soft pulse), `lofi` (78, D dorian: electric piano, swung drums, vinyl crackle), `pulse` (100, A minor: a plucked arpeggio, bass, kick) and `piano` (76, G major: a melody over left-hand fifths). A style fills in any of `bpm`, `root` and `scale` you leave out, and `--music lofi` swaps in the new style's values for just those. Scales: `hirajoshi`, `in`, `yo`, `iwato`, `major`, `minor`, `dorian`, `pentatonic_major`, `pentatonic_minor`, and any scale works with any style. The new styles are rendered in 30 second blocks, so a long track needs about the same memory as a short one.
 - **Energy:** `energy: low | mid | high` on a scene (default `mid`) adds or removes music layers, for example hats and kick at `mid` and snare and bass at `high` in `lofi`. Changes land on the nearest beat and slide over one beat. `koto` ignores it. `yamlreel story` sets it for you.
 - **Ducking:** `voiceover: {duck: true}` lowers the music to `music_level` (default 0.35) only while a clip is speaking: it eases down 0.15 s before the voice and back up over 0.5 s after it, and pauses shorter than 0.6 s stay ducked. Off by default, which keeps the music at `music_level` for the whole video. It also works with a music file, which is decoded first.
+- **Voice debreath:** `voiceover: {trim: true, debreath: true}` (recommended together). `debreath` (default false) silences the long inhale and breath sounds that cloned or TTS voices put between words and at the start of a clip: runs of at least 90 ms of quiet, unvoiced sound that is louder than silence but well under the speech level (which `trim` alone misses). It needs no ffmpeg. Order: debreath, then trim, then speed. It runs after the clip is read from the cache, so the raw audio is untouched and changing it never re-speaks a line; scene lengths and subtitle timing follow the processed clip. It only silences and never changes the clip length: use `trim` to shorten the gaps it leaves. `yamlreel check-voice` applies it too.
 - **Voice speed and trim:** `voiceover: {speed: 1.08, trim: true}`. `speed` (0.8 to 1.3, default 1.0) plays every narration clip faster or slower without changing its pitch, using ffmpeg's `atempo` (1.0 does not touch the audio and needs no ffmpeg). `trim` (default false) cuts silence at the start and end of each clip and shortens any quiet gap inside it longer than 0.3 s to 0.15 s, which is where breaths sit; it needs no ffmpeg. Both apply to spoken and `narration_audio` clips, trim first and then speed, after the clip is read from the cache. The cache keeps the raw audio under the same key, so changing them never re-speaks a line. Scene lengths and subtitle timing follow the processed clip. With `narration_words`, give times for the processed audio.
 - **Themes:** `sumi` (dark ink), `washi` (warm paper), `midnight` (dark, sans) and `editorial` (cream background, ink-black text, burnt-orange accent, serif headings; the accent is for large text and highlights, not small body text).
 - **Watermark:** appears on every frame and the poster. The default corner is bottom-right for landscape and top-left for vertical, because the Shorts buttons cover the right edge and the bottom.
@@ -462,6 +463,10 @@ watermark and default tags belong in config, not in code. Every option is explai
 A few settings widen what a spec can touch, so yamlreel only reads them from your **user** config or the command
 line, never from a spec or project config you downloaded: `allow_paths`, `allow_private_hosts`,
 `chromium_path`, `font_dir` and `voice_server`. See [SECURITY.md](https://github.com/nsijwali/yamlreel/blob/main/SECURITY.md).
+
+## Unreleased
+
+- **New:** `voiceover.debreath` silences breaths in narration clips ([Writing a spec](#writing-a-spec)); use it with `trim`.
 
 ## New in 0.3.3
 

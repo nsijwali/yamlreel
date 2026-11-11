@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .voice import (SAMPLE_RATE, VoiceError, VoiceServer, cached_clip_path, narration_text, read_wav,
-                    trim_silence)
+                    debreath, trim_silence)
 
 Recognise = Callable[[Path], str]
 
@@ -209,7 +209,10 @@ def check_spec(spec: dict[str, Any], server: VoiceServer | None, cache: Path, re
                 out.append(Finding(i, "note", "not cached, run render first"))
                 continue
         try:
-            speech = len(trim_silence(read_wav(path))) / SAMPLE_RATE
+            clip = read_wav(path)
+            if vo.get("debreath"):
+                clip = debreath(clip)  # as render does, so a breath is not counted as speech
+            speech = len(trim_silence(clip)) / SAMPLE_RATE
         except (VoiceError, OSError) as e:
             out.append(Finding(i, "ERROR", f"cannot read the clip ({e})"))
             continue
