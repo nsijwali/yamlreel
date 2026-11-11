@@ -464,7 +464,7 @@ A few settings widen what a spec can touch, so yamlreel only reads them from you
 line, never from a spec or project config you downloaded: `allow_paths`, `allow_private_hosts`,
 `chromium_path`, `font_dir` and `voice_server`. See [SECURITY.md](https://github.com/nsijwali/yamlreel/blob/main/SECURITY.md).
 
-## Unreleased
+## New in 0.3.5
 
 - **New:** `voiceover.debreath` silences breaths in narration clips ([Writing a spec](#writing-a-spec)); use it with `trim`.
 
