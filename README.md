@@ -275,6 +275,42 @@ Narration is read from the cache and only missing clips are synthesised, so afte
 | `yamlreel render <spec>` | Renders. Useful flags: `--preview`, `--out DIR`, `--format vertical\|landscape\|square\|all`, `--music koto\|ambient\|lofi\|pulse\|piano\|none\|file.mp3`, `--fps N`, `--contact-frames N`, `--only N,A-B`, `--no-voice`, `--voice-url URL`, `--read-screen`, `--allow-path DIR`, `--allow-private-hosts`. |
 | `yamlreel config init [--user]` / `config show` | Writes a starter config, or shows the merged settings and the files they came from. |
 | `yamlreel music --style lofi --seconds 30 --out track.wav` | Generates a music track on its own (`--style`, `--bpm`, `--root`, `--scale`, `--seed`; the style supplies the defaults). |
+| `yamlreel audit <video> [--target-lufs -14] [--strict]` | Optional add-on: checks a finished video's loudness, true peak, loop and short-form format; see [Polish add-on](#polish-add-on-optional). |
+| `yamlreel polish <video> [--sfx EVENTS.yaml] [--loudness LUFS] [--out FILE]` | Optional add-on: mixes timed sound effects into a finished video and/or normalises its loudness. |
+
+## Polish add-on (optional)
+
+`audit` and `polish` work on a finished video file, yours or one made by any other tool. They are separate from
+`render`: no spec field changes, nothing new to install, and a render never runs them.
+
+```bash
+yamlreel audit video.mp4                       # loudness, true peak, loop, short-form format
+yamlreel polish video.mp4 --loudness -14       # normalise to about -14 LUFS, with a peak limiter
+yamlreel polish video.mp4 --sfx events.yaml    # mix timed sound effects over the video's own audio
+```
+
+- **Audit.** Prints `ok` or `warn` lines: integrated loudness (EBU R128) against a target (default -14 LUFS, within 2),
+  true peak (warns above -1 dBTP, which AAC can push into clipping), a **loop check** (the last frame should lead into the
+  first as smoothly as any two neighbouring frames, so a replay shows no cut) and, for vertical video, the 60-second Shorts
+  limit. `--strict` exits 1 on any warning, for scripts and CI.
+- **Effects.** `events.yaml` holds a `sfx:` list. Each item has `at` (seconds), one of `kind` or `file`, and an optional
+  `gain` (0 to 2, default 0.5):
+
+  ```yaml
+  sfx:
+    - {at: 1.8, kind: tap}
+    - {at: 6.8, kind: clatter, gain: 0.8}
+    - {at: 8.0, file: meow.wav}         # your own recording; relative to this file
+  ```
+
+  Built-in kinds are synthesised on your machine (nothing to license): `tap`, `thump`, `clatter`, `splash`, `scrape`,
+  `whoosh`, `pop`, `click`, `tick`, `rustle` and `ping`. They are simple and a little synthetic; a real recording
+  through `file:` sounds more natural. A `file:` must sit in the events file's folder, or in a folder given with
+  `--allow-path DIR`. A video with no audio gets just the effects.
+- **Loudness.** `--loudness LUFS` (-40 to -5) runs ffmpeg's `loudnorm` and a peak limiter. The result lands close to the
+  target, not exactly on it. Without `--loudness`, `polish` still limits the peaks.
+- **Output.** `<video>-polished.mp4` next to the input unless you pass `--out`. The picture is copied, not re-encoded.
+  An existing file is not overwritten without `--force`.
 
 ## Writing a spec
 

@@ -1,4 +1,4 @@
-"""Command line interface: yamlreel render|validate|script|check-voice|init|story|config|music."""
+"""Command line interface: yamlreel render|validate|script|check-voice|init|story|config|music|audit|polish."""
 from __future__ import annotations
 
 import argparse
@@ -12,6 +12,7 @@ import yaml
 
 from . import __version__
 from . import music as music_mod
+from . import polish as polish_mod
 from . import story as story_mod
 from . import subtitles as subs_mod
 from . import voice as voice_mod
@@ -299,6 +300,21 @@ def cmd_music(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_audit(args: argparse.Namespace) -> int:
+    rep = polish_mod.audit_video(Path(args.video).expanduser(), args.target_lufs)
+    print("\n".join(rep.lines))
+    return 1 if args.strict and rep.warnings else 0
+
+
+def cmd_polish(args: argparse.Namespace) -> int:
+    video = Path(args.video).expanduser()
+    out = Path(args.out).expanduser() if args.out else video.with_name(f"{video.stem}-polished.mp4")
+    done = polish_mod.polish_video(video, out, Path(args.sfx).expanduser() if args.sfx else None, args.loudness,
+                                   [Path(a) for a in args.allow_path], args.force)
+    print(f"wrote {done}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="yamlreel", description="Render short videos from a YAML spec.")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -370,6 +386,20 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--seed", type=int, default=7)
     m.add_argument("--out", default="music.wav")
     m.set_defaults(fn=cmd_music)
+    a = sub.add_parser("audit", help="check a finished video: loudness, true peak, loop, short-form format")
+    a.add_argument("video")
+    a.add_argument("--target-lufs", type=float, default=polish_mod.TARGET_LUFS, help="loudness to compare with (default: -14)")
+    a.add_argument("--strict", action="store_true", help="exit 1 when anything warns (for scripts and CI)")
+    a.set_defaults(fn=cmd_audit)
+    pl = sub.add_parser("polish", help="mix sound effects into a finished video and/or normalise its loudness")
+    pl.add_argument("video")
+    pl.add_argument("--sfx", metavar="EVENTS.yaml", help="timed sound effects: a `sfx:` list of {at, kind|file, gain}")
+    pl.add_argument("--loudness", type=float, metavar="LUFS", help="normalise to this integrated loudness, e.g. -14")
+    pl.add_argument("--out", help="output file (default: <video>-polished.mp4)")
+    pl.add_argument("--allow-path", action="append", default=[], metavar="DIR",
+                    help="also let the events file use recordings from DIR (repeatable)")
+    pl.add_argument("--force", action="store_true", help="overwrite an existing --out file")
+    pl.set_defaults(fn=cmd_polish)
     args = p.parse_args(argv)
     try:
         return args.fn(args)
