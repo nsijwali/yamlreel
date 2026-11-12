@@ -77,7 +77,8 @@ def titles(*seconds, **extra):
 
 def run_time(video: Path, fps: int = 10) -> float:
     """The video stream's length (frames / fps), from ffmpeg itself (ffprobe may be absent)."""
-    done = subprocess.run([ffmpeg_exe(), "-i", str(video), "-map", "0:v", "-c", "copy", "-f", "null", "-"],
+    # decode (no `-c copy`): the stats line of a stream copy has no `frame=` on every ffmpeg version
+    done = subprocess.run([ffmpeg_exe(), "-i", str(video), "-map", "0:v", "-f", "null", "-"],
                           capture_output=True, text=True)
     return int(re.findall(r"frame=\s*(\d+)", done.stderr)[-1]) / fps
 
