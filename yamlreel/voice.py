@@ -343,6 +343,8 @@ def screen_text(sc: dict[str, Any]) -> str:
         parts = [sc.get("title"), sc.get("subtitle")]
     elif kind == "type":
         parts = [sc.get("text")]
+    elif kind == "lineart":
+        parts = [sc.get("text")] if sc.get("kind", "presenter") == "presenter" else list(sc.get("items", []))
     elif kind == "bullets":
         parts = [sc.get("title"), *sc.get("items", [])]
     elif kind == "stat":

@@ -7,11 +7,11 @@ subtitles: true
 voiceover:
   duck: true
 scenes:
-- type: type
+- type: lineart
   text: A queue absorbs bursts.
   narration: A queue absorbs bursts.
   transition: cut
-  seconds: 3.0
+  seconds: 4.0
   energy: high
 - type: meter
   title: Meter

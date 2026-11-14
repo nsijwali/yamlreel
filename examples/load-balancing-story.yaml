@@ -7,7 +7,7 @@ subtitles: true
 voiceover:
   duck: true
 scenes:
-- type: type
+- type: lineart
   text: One busy server should not slow down every user.
   narration: One busy server should not slow down every user.
   transition: cut

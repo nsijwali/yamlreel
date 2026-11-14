@@ -568,6 +568,8 @@ SCENE_TYPES = {"title": TitleScene, "type": TypeScene, "shot": ShotScene, "diagr
                "bullets": BulletsScene, "code": CodeScene, "stat": StatScene, "table": TableScene,
                "array": ArrayScene, "meter": MeterScene, "tree": TreeScene,
                "timeline": TimelineScene, "grid": GridScene, "cta": CtaScene}
+from .lineart_scene import LineArtScene  # noqa: E402  (it imports Scene from scenebase, so no cycle)
+SCENE_TYPES["lineart"] = LineArtScene
 
 
 def build_scene(spec: dict[str, Any], ctx: Ctx) -> Scene:

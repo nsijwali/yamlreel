@@ -74,7 +74,8 @@ def test_field_tables_cover_every_key_the_scenes_read():
         if name == "shot":
             read |= set(CAPTURE_OPTS)
         assert read <= cls.FIELDS | Scene.COMMON_FIELDS, f"{name}: {sorted(read - cls.FIELDS - Scene.COMMON_FIELDS)}"
-        assert REQUIRED[name] and set(REQUIRED[name]) <= cls.FIELDS, name
+        # lineart needs `text` or `items` depending on its `kind`, so it has no unconditional required field
+        assert (REQUIRED[name] or name == "lineart") and set(REQUIRED[name]) <= cls.FIELDS, name
     for var, table in (("n", DiagramScene.NODE_FIELDS), ("e", DiagramScene.EDGE_FIELDS), ("f", DiagramScene.FLASH_FIELDS)):
         read = _literal_keys(DiagramScene.__init__, {var})
         assert len(read) >= 3, f"{var}: the AST walk found {sorted(read)}; the guard would be vacuous"
@@ -209,6 +210,7 @@ NODES = [{"id": "a", "label": "A", "x": 0.2, "y": 0.5}, {"id": "b", "label": "B"
 BASE_SCENES = {
     "title": {"type": "title", "title": "x"},
     "type": {"type": "type", "text": "x"},
+    "lineart": {"type": "lineart", "text": "x"},
     "shot": {"type": "shot", "source": "a.png"},
     "bullets": {"type": "bullets", "items": ["a"]},
     "stat": {"type": "stat", "value": "1"},

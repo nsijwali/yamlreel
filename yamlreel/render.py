@@ -623,6 +623,8 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         if contact:
             fracs = contact_fracs(contact_frames)
             sheet = contact_sheet(tl, out / f"contact{tag}.png", fracs=fracs, scenes=only)
+    from .lineart_scene import _Page
+    _Page.close_all()   # free Chromium (and let a later format capture a `shot`) before the next format starts
     return {"video": video, "poster": None if only is not None else out / "poster.jpg", "contact": sheet, "srt": srt,
             "seconds": out_seconds, "full_seconds": total, "windows": [(a, b, s0, s1) for (a, b), (s0, s1) in zip(windows, spans)],
             "warnings": tl.warnings, "size": (W, H)}

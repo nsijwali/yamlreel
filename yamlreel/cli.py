@@ -265,7 +265,7 @@ def cmd_story(args: argparse.Namespace) -> int:
         print(f"{dest} exists; pass --force to overwrite", file=sys.stderr)
         return 2
     outline = story_mod.load_outline(src)
-    text = story_mod.generate(outline, src.name, theme=args.theme, fmt=args.format)
+    text = story_mod.generate(outline, src.name, theme=args.theme, fmt=args.format, lineart=not args.no_lineart)
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8")
     print(f"wrote {dest} ({len(outline['steps'])} steps); fill in the TODO placeholders, then: "
@@ -370,6 +370,8 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--out", help="where to write the spec (default: <outline>.spec.yaml next to the outline)")
     st.add_argument("--theme", help="theme name to put in the spec")
     st.add_argument("--format", choices=list(FORMATS), help="the one format to put in the spec")
+    st.add_argument("--no-lineart", action="store_true",
+                    help="open with the typed-line hook instead of the line-art presenter (which needs Chromium)")
     st.add_argument("--force", action="store_true", help="overwrite an existing file")
     st.set_defaults(fn=cmd_story)
     c = sub.add_parser("config", parents=[common], help="show the effective config, or write a starter config file")

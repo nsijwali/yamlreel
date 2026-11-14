@@ -52,7 +52,7 @@ version = {attr = "yamlreel.__version__"}
 include = ["yamlreel*"]
 
 [tool.setuptools.package-data]
-yamlreel = ["templates/*.yaml"]
+yamlreel = ["templates/*.yaml", "lineart/*.js", "lineart/LICENSE-*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

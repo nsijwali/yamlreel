@@ -27,6 +27,7 @@ from .datascenes import (ARRAY_ACTIONS, DEFAULT_CTA_PROMPT, GRID_ACTIONS, GRID_C
 from .music import ENERGY_LEVELS, NOTE_OFFSETS, SCALES, STYLE_DEFAULTS
 from .subtitles import (DEFAULT_SUBTITLES, MAX_KEYWORD_CHARS, MAX_KEYWORDS, POSITIONS, STYLES)
 from .scenes import SCENE_TYPES, DiagramScene, Scene
+from .lineart_scene import KINDS as LINEART_KINDS
 from .textkit import MAX_COUNT_MAGNITUDE, split_count
 from .theme import get_theme
 from .voice import MAX_SPEED, MIN_SPEED
@@ -36,7 +37,7 @@ FORMATS = {"landscape": (1920, 1080), "vertical": (1080, 1920), "square": (1080,
 
 DEFAULT_SECONDS = {"title": 3.0, "type": 3.0, "shot": 4.0, "diagram": 7.0,
                    "bullets": 5.0, "code": 6.0, "stat": 3.5, "table": 8.0, "array": 8.0, "meter": 10.0, "tree": 8.0,
-                   "timeline": 10.0, "grid": 10.0, "cta": 6.0}
+                   "timeline": 10.0, "grid": 10.0, "cta": 6.0, "lineart": 6.0}
 REQUIRED = {
     "title": ["title"],
     "type": ["text"],
@@ -52,6 +53,7 @@ REQUIRED = {
     "timeline": ["axis", "events"],
     "grid": ["cells"],
     "cta": ["question"],
+    "lineart": [],
 }
 MUSIC_STYLES = {*STYLE_DEFAULTS, "none"}
 TRANSITIONS = ("fade", "slide", "zoom", "cut")
@@ -1023,6 +1025,7 @@ FIELD_CHECKS: dict[str, Checker] = {
     "window": _timeline_window,
     "cells": _grid_cells,
     "seed": _grid_seed,
+    "kind": lambda path, v, sc, env: _choice(path, v, LINEART_KINDS),
 }
 # Fields whose meaning depends on the scene type get their own checker; it wins over FIELD_CHECKS.
 TYPE_CHECKS: dict[str, dict[str, Checker]] = {
@@ -1059,6 +1062,15 @@ def _scene(i: int, raw: Any, env: _Env) -> dict[str, Any]:
         if k != "type":
             check = TYPE_CHECKS.get(t, {}).get(k) or FIELD_CHECKS[k]
             sc[k] = check(f"{path}.{k}", sc[k], sc, env)
+    if t == "lineart":
+        kind = sc.setdefault("kind", "presenter")
+        need = "text" if kind == "presenter" else "items"
+        if need not in sc:
+            raise SpecError(f"{path} (lineart {kind}): missing {need}")
+        if kind == "carry" and len(sc["items"]) > 6:
+            raise SpecError(f"{path}.items: a carry scene draws at most 6 items")
+        if kind == "carry" and "seconds" not in raw:   # each figure needs about 0.6 s more than the last
+            sc["seconds"] = round(max(DEFAULT_SECONDS["lineart"], 4.6 + 0.6 * (len(sc["items"]) - 1)), 1)
     if t == "cta":
         sc.setdefault("answers", [])
         sc.setdefault("prompt", DEFAULT_CTA_PROMPT)
