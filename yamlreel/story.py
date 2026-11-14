@@ -299,7 +299,8 @@ def _step_scene(step: dict[str, Any]) -> dict[str, Any]:
     return sc
 
 
-def build_spec(outline: dict[str, Any], theme: str | None = None, fmt: str | None = None) -> dict[str, Any]:
+def build_spec(outline: dict[str, Any], theme: str | None = None, fmt: str | None = None,
+               lineart: bool = True) -> dict[str, Any]:
     """The spec dict for a checked outline."""
     energy, duck = _supports()
 
@@ -309,8 +310,8 @@ def build_spec(outline: dict[str, Any], theme: str | None = None, fmt: str | Non
         return sc
 
     scenes: list[dict[str, Any]] = [with_energy(
-        {"type": "type", "text": outline["hook"], "narration": outline["hook"], "transition": "cut",
-         "seconds": narrated_seconds("type", outline["hook"])}, "high")]
+        {"type": "lineart" if lineart else "type", "text": outline["hook"], "narration": outline["hook"], "transition": "cut",
+         "seconds": max(narrated_seconds("type", outline["hook"]), 4.0 if lineart else 0)}, "high")]
     if outline["problem"]:
         scenes.append(with_energy(
             {"type": "title", "eyebrow": "THE PROBLEM", "title": outline["problem"], "narration": outline["problem"],
@@ -375,7 +376,7 @@ def _rebase_event_error(message: str, spec: dict[str, Any], outline: dict[str, A
 
 
 def generate(outline: dict[str, Any], source_name: str = "an outline", theme: str | None = None,
-             fmt: str | None = None) -> str:
+             fmt: str | None = None, lineart: bool = True) -> str:
     """The spec text for a checked outline. It is loaded back through the normal validator before it is returned,
     so a generated spec that would not render is a StoryError here, not at render time."""
     if theme:
@@ -383,7 +384,7 @@ def generate(outline: dict[str, Any], source_name: str = "an outline", theme: st
             get_theme(theme)
         except ValueError as e:
             raise StoryError(f"--theme: {e}") from e
-    spec = build_spec(outline, theme, fmt)
+    spec = build_spec(outline, theme, fmt, lineart)
     text = render_spec(spec, source_name)
     try:
         validate(yaml.safe_load(text), Config())

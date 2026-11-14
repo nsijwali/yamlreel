@@ -10,9 +10,9 @@ theme: midnight          # sumi | washi | midnight
 formats: [vertical, landscape]
 music: {style: koto, bpm: 72, seed: 7, snap: false}
 scenes:
-  - type: type
+  - type: lineart          # an ink figure walks in and points at the hook (needs Chromium; falls back to typed text)
     text: "What is a cache stampede?"
-    seconds: 3
+    seconds: 4
 
   - type: diagram
     seconds: 7.5

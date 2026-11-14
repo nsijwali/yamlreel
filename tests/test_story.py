@@ -221,7 +221,7 @@ def gen(outline=None, **kw):
 def test_the_generated_spec_has_the_arc_and_is_a_plain_valid_spec():
     text, spec = gen()
     kinds = [s["type"] for s in spec["scenes"]]
-    assert kinds == ["type", "title", "array", "bullets", "bullets", "cta"]
+    assert kinds == ["lineart", "title", "array", "bullets", "bullets", "cta"]
     assert spec["scenes"][0]["transition"] == "cut" and spec["scenes"][1]["eyebrow"] == "THE PROBLEM"
     assert [s.get("step") for s in spec["scenes"]] == [None, None, "Token bucket", "Sliding window", None, None]
     assert spec["scenes"][2]["narration"] == "Each request spends a token." and spec["scenes"][-1]["answers"] == OUTLINE["answers"]
@@ -251,12 +251,12 @@ def test_every_placeholder_type_passes_load_spec(tmp_path, kind):
 def test_every_scene_type_with_required_fields_is_a_placeholder_or_left_out_on_purpose():
     from yamlreel.specs import REQUIRED
     missing = set(REQUIRED) - set(story.PLACEHOLDERS)
-    assert missing == {"shot", "cta"}
+    assert missing == {"shot", "cta", "lineart"}   # lineart is built from the hook, not a step
 
 
 def test_optional_parts_can_be_left_out():
     text, spec = gen({"topic": "T", "hook": "H.", "steps": [{"name": "Only", "say": "Say it."}]})
-    assert [s["type"] for s in spec["scenes"]] == ["type", "bullets", "title"]   # no problem, no when_to_use, closing card
+    assert [s["type"] for s in spec["scenes"]] == ["lineart", "bullets", "title"]   # no problem, no when_to_use, closing card
     assert spec["scenes"][-1]["title"] == "T"
     _, spec = gen({**OUTLINE, "question": "Q?", "answers": []})
     assert spec["scenes"][-1]["answers"] == []

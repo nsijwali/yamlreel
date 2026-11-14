@@ -7,7 +7,7 @@ theme: midnight
 formats: [vertical, landscape]
 subtitles: {keywords: [token bucket, sliding window]}
 scenes:
-  - type: type
+  - type: lineart
     text: One noisy client can take your API down.
     narration: One noisy client can take your API down.
     transition: cut
