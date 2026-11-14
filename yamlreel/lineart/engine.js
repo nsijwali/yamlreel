@@ -267,7 +267,7 @@
       gl(seg(t, 0, 0.5));
       const step = cl((dur - 4.2) / Math.max(1, n - 1), 0.3, 1.7), sp = stride(s);
       xs.forEach((x, k) => {
-        const arrive = 2.4 + k * step, walkDur = 2.2, t0 = arrive - walkDur, stand = Math.max(x - 34 * s, 22 * s), x0 = stand - sp * walkDur;
+        const arrive = 2.4 + k * step, stand = Math.max(x - 34 * s, 22 * s), x0 = (stand - sp * 2.2 > -95 * s && stand - sp * 2.2 < 50 * s) ? -95 * s : stand - sp * 2.2, walkDur = (stand - x0) / sp, t0 = arrive - walkDur;
         const going = t >= t0 && t < arrive, px = t < t0 ? x0 : t < arrive ? x0 + sp * (t - t0) : stand;
         const carry = t >= t0 - 0.3 && t < arrive + 0.15 ? 1 : 0;
         const hand = figs[k].pose(going ? (t - t0) / walk.period : 0, going ? 1 : 0, carry, 0, px, ground, s);
