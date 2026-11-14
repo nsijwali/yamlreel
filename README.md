@@ -418,6 +418,8 @@ scenes:
 
 Faceless ink figures with a wobbling pen, in your theme's colours. The text shrinks to fit (with a warning), and a `carry` scene gets about 0.6 s more per item unless you set `seconds`. They need `pip install 'yamlreel[capture]'` and a Chromium or Chrome (`playwright install chromium`, or `chromium_path` in your user config); without them the scene is drawn as a typed line. The drawing library is [line-art-animation](https://github.com/JDhruv14/line-art-animation) by JDhruv14 (MIT), vendored in `yamlreel/lineart/` with its licence.
 
+Two designed sample voices (female and male, American, no real person cloned) are in [`examples/voices/`](https://github.com/nsijwali/yamlreel/tree/main/examples/voices). They are CC-BY-NC (OmniVoice), so credit it and keep them non-commercial.
+
 ## Voiceover in your own voice
 
 Give a scene a `narration:` line and yamlreel speaks it, lowers the music under the voice, and makes the scene as
