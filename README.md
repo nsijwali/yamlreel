@@ -16,7 +16,7 @@ original music, word-by-word subtitles and an optional voiceover in your own voi
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
-<img src="https://raw.githubusercontent.com/nsijwali/yamlreel/main/docs/demo.gif" alt="A diagram building itself: a YAML spec and VoiceStudio feed yamlreel, which hands frames and audio to ffmpeg to produce the video" width="720">
+<img src="https://raw.githubusercontent.com/nsijwali/yamlreel/main/docs/demo.gif" alt="A line-art figure presents the hook, then a diagram builds itself: a YAML spec and VoiceStudio feed yamlreel, which hands frames and audio to ffmpeg to produce the video" width="720">
 
 **▶ [Watch the 1-minute demo](https://github.com/nsijwali/yamlreel/releases/tag/v0.2.0)**: a video about yamlreel, made by yamlreel from one YAML file, with no video editor.
 
