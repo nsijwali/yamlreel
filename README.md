@@ -379,7 +379,7 @@ scenes: [...]                 # every scene also takes: step (badge label), tran
 - **Grid:** `cells` is 1 to 33 rows of equal length (1 to 33), each character `#` (the foreground colour), `.` (the background card colour) or `o` (the accent). **Quote every row that starts with `#`**: YAML reads an unquoted one as a comment, and the error says so. `seed` (0 to 1000000, default 0) fixes the stain's shape and the random orders. Up to 40 `steps`, in time order, each with `at` and exactly one action: `reveal: sweep|pop` (`seconds`, default 1), `stain: [row, col]` (needs `radius` 0.5 to 33 cells, `seconds` default 1.5), `clear_stain: true` (the covered cells become lost), `lose: [[r, c], ...]`, `recover: all|[[r, c], ...]` (`per_cell` 0.01 to 2, default 0.08; `order: row|random`), `status: text` (a line above the grid, with `color`), `outline: [r0, c0, r1, c1]` (with `text` and `color`), `unmark: true` (clears the outlines) and `fail: true` (the frame pulses twice; `text` shows for 1.5 s). Cells are `#` foreground, `.` card and `o` accent (on a dark theme `#` is light on a dark card, so for a QR code that must look like a scannable code, use a light theme such as `washi` or `editorial`); lost cells are dimmed and hatched. The steps are replayed when the spec loads, so `scenes[2].steps[5].recover: no cells are lost at 6s` is an error before rendering. Without a `reveal` step the grid fades in at 0.1 s. A warning says when cells are under 16px, the caption would cover the grid, a status shrank to fit, or a step ends after the scene.
 - **Kicker:** `kicker: "01 / THE BURST"` on a `bullets`, `code`, `diagram`, `table`, `array`, `meter`, `grid`, `tree` or `timeline` scene (`title` scenes have `eyebrow`) draws a small tracked tag in the accent colour above the title, or where the title would start if there is none. One line, up to 48 characters; shrinks with a warning if too wide.
 - **Step badge:** `step: Token bucket` on a scene draws `STEP n/N · TOKEN BUCKET` and an N-segment progress bar at the top centre. N is the number of distinct `step` labels in the spec, in order of first appearance; n is this scene's label. Consecutive scenes may share a label. A spec may use at most 12 distinct labels (`MAX_STEP_LABELS`). A warning appears when the watermark would overlap the badge.
-- **Line-art scenes:** `type: lineart` draws faceless ink figures with a wobbling pen in headless Chromium, in your theme's colours. It is the default opening of `yamlreel story` (use `--no-lineart` for the plain typed line) and of the `explainer` and `system-design` templates. It needs `pip install 'yamlreel[capture]'` and a Chromium or Chrome (`playwright install chromium`, or `chromium_path` in your user config); without them the scene is drawn as a typed line and the render warns. The drawing library is [line-art-animation](https://github.com/JDhruv14/line-art-animation) by JDhruv14 (MIT), vendored in `yamlreel/lineart/` with its licence.
+- **Line-art scenes:** `type: lineart`, see [Line-art scenes](#line-art-scenes).
 - **CTA end card:** `type: cta` with `question` (required), `answers` (0 to 4, shown as A to D) and `prompt` (default "Answer in the comments"). The bubble pops in, the answers follow one by one and the prompt pulses once a second. The first `cta` question is also added to `share-copy.txt` (before the links and hashtags, unless it is already in the description), and `--read-screen` reads the question, answers and prompt.
 - **Subtitles:** see [Word-by-word subtitles](#word-by-word-subtitles).
 - **Contact sheet:** `render --contact-frames N` (1 to 8) writes `contact.png` with N stills per scene, one row per scene, to check that reveals progress and nothing overlaps. Default: two per scene.
@@ -402,6 +402,21 @@ scenes: [...]                 # every scene also takes: step (badge label), tran
 - Text never silently overflows. It wraps, then shrinks, and `render` warns you when it had to.
 - In vertical frames, content sits above the lower third, clear of the Shorts UI.
 - A 15-second video carries one idea. Before you publish, check anything you simplified.
+
+## Line-art scenes
+
+<img src="https://raw.githubusercontent.com/nsijwali/yamlreel/main/docs/lineart-presenter.gif" alt="A line-art figure walks in and points at a hook line that writes itself out" width="400"> <img src="https://raw.githubusercontent.com/nsijwali/yamlreel/main/docs/lineart-carry.gif" alt="Three line-art figures each carry a box of data to a database drum, which fills" width="400">
+
+```yaml
+scenes:
+  - type: lineart                  # presenter (default): a figure walks in and points at the line
+    text: Every key expires in the same second.
+  - type: lineart
+    kind: carry                    # one figure per item carries data to it (1 to 6 items)
+    items: [Users, Orders, Payments]
+```
+
+Faceless ink figures with a wobbling pen, in your theme's colours. The text shrinks to fit (with a warning), and a `carry` scene gets about 0.6 s more per item unless you set `seconds`. They need `pip install 'yamlreel[capture]'` and a Chromium or Chrome (`playwright install chromium`, or `chromium_path` in your user config); without them the scene is drawn as a typed line. The drawing library is [line-art-animation](https://github.com/JDhruv14/line-art-animation) by JDhruv14 (MIT), vendored in `yamlreel/lineart/` with its licence.
 
 ## Voiceover in your own voice
 
@@ -502,9 +517,9 @@ A few settings widen what a spec can touch, so yamlreel only reads them from you
 line, never from a spec or project config you downloaded: `allow_paths`, `allow_private_hosts`,
 `chromium_path`, `font_dir` and `voice_server`. See [SECURITY.md](https://github.com/nsijwali/yamlreel/blob/main/SECURITY.md).
 
-## Unreleased
+## New in 0.3.6
 
-- **New:** `type: lineart` scenes (an ink figure presents the hook, or carries data to each item) and they now open `yamlreel story` and the `explainer` and `system-design` templates by default. Needs Chromium; falls back to typed text.
+- **New:** `type: lineart` scenes ([Line-art scenes](#line-art-scenes)): an ink figure presents the hook, or one figure per item carries data to it. They now open `yamlreel story` (use `--no-lineart` for the old typed line) and the `explainer` and `system-design` templates. Needs Chromium; without it the scene is drawn as typed text and the render warns. Specs you already have are unchanged.
 
 ## New in 0.3.5
 
