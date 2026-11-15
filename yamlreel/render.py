@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import math
+import queue
 import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +37,8 @@ CONTACT_COLS = 4  # tiles across a default sheet
 YT_TITLE_MAX = 100
 YT_DESC_MAX = 5000
 SHORTS_MAX_SECONDS = 180
+FRAMES_AHEAD = 3  # scenes are told this many frames early that a frame is coming (Scene.prefetch)
+FRAME_QUEUE = 4  # frames waiting for ffmpeg at most (about 25 MB at 1080x1920)
 MAX_WATERMARK_PIXELS = 16_000_000  # a watermark image larger than this is refused
 
 
@@ -213,6 +217,11 @@ class Timeline:
             if t >= self.starts[i]:
                 return i, t - self.starts[i]
         return 0, 0.0
+
+    def prefetch(self, t: float) -> None:
+        """Tell the scene at `t` that `frame_at(t)` comes soon (see Scene.prefetch)."""
+        i, lt = self.locate(t)
+        self.scenes[i].prefetch(lt)
 
     def _last_frame(self, i: int) -> Image.Image:
         if i not in self._last:
@@ -617,20 +626,45 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
             raise RenderError(f"cannot run ffmpeg at {ffmpeg}: {e}") from e
         t_frames = clock()
         t_draw = t_pipe = 0.0
+        # Frames go to ffmpeg from a second thread, so the next frame is drawn while this one is being read by the
+        # encoder. The queue is short: it holds a few frames at most, in order, and blocks the drawing when full.
+        pending: queue.Queue[bytes | None] = queue.Queue(maxsize=FRAME_QUEUE)
+        broken = threading.Event()   # ffmpeg stopped reading (it exited early); its log says why
+
+        def feed() -> None:
+            while (data := pending.get()) is not None:
+                if not broken.is_set():
+                    try:
+                        proc.stdin.write(data)
+                    except Exception:   # keep draining so the drawing side never blocks on a full queue
+                        broken.set()
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+
+        feeder = threading.Thread(target=feed, name="yamlreel-frames", daemon=True)
+        feeder.start()
         try:
             for (n0, n1), (a, _) in zip(frame_runs, spans or [(0.0, total)]):
                 for n in range(n0, n1):
+                    if broken.is_set():
+                        break
                     t0 = clock()
+                    for m in (range(n + 1, n + FRAMES_AHEAD + 1) if n == n0 else (n + FRAMES_AHEAD,)):
+                        if m < n1:
+                            tl.prefetch(max(m / fps, a))
                     # the poster doubles as frame 0 (thumbnail); a slice has no poster
                     img = poster if n == 0 and only is None else tl.frame_at(max(n / fps, a))
                     t1 = clock()
-                    # converting an RGB frame to RGB only copies it: skip that
-                    proc.stdin.write((img if img.mode == "RGB" else img.convert("RGB")).tobytes())
+                    # The bytes are copied out here, on the drawing thread: a scene may reuse its canvas for the next
+                    # frame. Converting an RGB frame to RGB only copies it: skip that.
+                    pending.put((img if img.mode == "RGB" else img.convert("RGB")).tobytes())
                     t_draw += t1 - t0
                     t_pipe += clock() - t1
-            proc.stdin.close()
-        except BrokenPipeError:
-            pass
+        finally:   # also on an error while drawing: let ffmpeg finish and exit instead of leaving it waiting
+            pending.put(None)
+            feeder.join()
         rc = proc.wait()
         t_encoded = clock()
         errlog.close()
