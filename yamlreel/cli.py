@@ -167,6 +167,19 @@ def _only_note(windows: list[tuple[int, int, float, float]], n_scenes: int, full
             f"({sum(s1 - s0 for _, _, s0, s1 in windows):.2f}s)")
 
 
+def _profile_text(fmt: str, p: dict, video_seconds: float) -> str:
+    """The `--profile` report of one format: time per stage, then drawing time per scene type, slowest first."""
+    total = p["total"] or 1e-9
+    lines = [f"profile {fmt}: {p['total']:.1f}s for {video_seconds:.1f}s of video "
+             f"({video_seconds / total:.1f}x real time, {p['frames']} frames)"]
+    for name, sec in p["stages"]:
+        lines.append(f"  {name:<26} {sec:7.2f}s  {100 * sec / total:3.0f}%")
+    lines.append("  drawing by scene type (the poster and contact-sheet frames included):")
+    for name, (sec, n) in sorted(p["scene_types"].items(), key=lambda kv: -kv[1][0]):
+        lines.append(f"    {name:<24} {sec:7.2f}s  {n:5d} frames  {1000 * sec / max(n, 1):6.1f} ms/frame")
+    return "\n".join(lines)
+
+
 def cmd_render(args: argparse.Namespace) -> int:
     cfg = _config(args)
     spec = load_spec(args.spec, cfg)
@@ -207,6 +220,9 @@ def cmd_render(args: argparse.Namespace) -> int:
         warns += [f"{fmt}: {w}" for w in r["warnings"]]
     for w in warns:
         print(f"  warning: {w}", file=sys.stderr)
+    if args.profile:
+        for fmt, r in results.items():
+            print(_profile_text(fmt, r["profile"], r["seconds"]))
     if only is None:
         print(f"share copy: {out_dir / 'share-copy.txt'}")
     return 0
@@ -350,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="render only these scenes (0-based, e.g. 3, 2,4 or 2-4), cut out of the full video; "
                         "writes video-scenes-<N>.mp4 beside the full outputs")
     r.add_argument("--preview", action="store_true", help="half size, 12 fps: fast look at timing and layout")
+    r.add_argument("--profile", action="store_true", help="print where the render time went: per stage and per scene type")
     r.add_argument("--contact-frames", type=int, metavar="N",
                    help="stills per scene on the contact sheet, 1-8 (default: 2); one row per scene")
     r.set_defaults(fn=cmd_render)

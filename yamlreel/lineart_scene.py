@@ -4,6 +4,7 @@ page fails, the scene falls back to a typed line so a render never stops on it."
 from __future__ import annotations
 
 import atexit
+import base64
 import io
 import json
 from importlib import resources
@@ -40,9 +41,28 @@ class _Page:
             self.page.set_content("<!doctype html><meta charset=utf-8><body></body>")
             self.page.add_script_tag(content=resources.files("yamlreel").joinpath("lineart/engine.js").read_text("utf-8"))
             self.page.evaluate("([w, h, c]) => window.LA.setup(w, h, c)", [W, H, colors])
+            self._clip = {"x": 0, "y": 0, "width": W, "height": H, "scale": 1}
+            try:   # Chromium's own capture call, with its fast PNG encoder: the same pixels, sooner
+                self._cdp = context.new_cdp_session(self.page)
+                # the frame size is set per session; without it this session would capture the window, not the frame
+                self._cdp.send("Emulation.setDeviceMetricsOverride",
+                               {"width": W, "height": H, "deviceScaleFactor": 1, "mobile": False})
+            except Exception:
+                self._cdp = None
         except BaseException:
             self.close()
             raise
+
+    def png(self) -> bytes:
+        """The page as PNG bytes (lossless either way; the direct call skips Playwright's slower encoder settings)."""
+        if self._cdp is not None:
+            try:
+                shot = self._cdp.send("Page.captureScreenshot", {"format": "png", "optimizeForSpeed": True,
+                                                                 "captureBeyondViewport": False, "clip": self._clip})
+                return base64.b64decode(shot["data"])
+            except Exception:
+                self._cdp = None   # an older or different browser: use the standard screenshot from here on
+        return self.page.screenshot(type="png")
 
     def close(self) -> None:
         try:
@@ -99,11 +119,15 @@ class LineArtScene(Scene):
         if self._fallback is not None:
             return self._fallback.frame(t)
         try:
-            page = _Page.get(self.ctx).page
+            holder = _Page.get(self.ctx)
+            page = holder.page
             info = page.evaluate("([s, k, t, d]) => window.LA.frame(s, k, t, d)", [self.payload, self.key, float(t), self.duration])
             if info and info.get("shrunk"):
                 self.ctx.warn("lineart text was shrunk to fit the frame; shorten it for a bigger, easier read")
-            img = Image.open(io.BytesIO(page.screenshot(type="png"))).convert("RGB")
+            img = Image.open(io.BytesIO(holder.png())).convert("RGB")
+            if img.size != (self.ctx.W, self.ctx.H) and holder._cdp is not None:
+                holder._cdp = None   # the direct capture missed the frame size: take the standard screenshot instead
+                img = Image.open(io.BytesIO(holder.png())).convert("RGB")
         except Exception as e:   # no playwright, no Chromium, or the page failed: keep the render going
             self.ctx.warn(f"lineart scene drawn as typed text ({type(e).__name__}: {str(e)[:80]}); "
                           "pip install 'yamlreel[capture]' and playwright install chromium to draw it")

@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -140,6 +141,7 @@ class Timeline:
             self.ctx.warn(f"scene{'s' if len(ids) != 1 else ''} {', '.join(map(str, ids[:8]))}{', ...' if len(ids) > 8 else ''}: "
                           "the caption appears after the narration ends, so it does not cover the subtitles")
         self.cut_in: set[int] = set()  # scenes that begin with a hard cut whatever their transition (`render --only`)
+        self.draw_seconds: dict[str, list[float]] = {}  # scene type -> [seconds spent drawing, frames], for --profile
         self._current = -1  # the scene frame_at last drew; scenes far from it give their cached layers back
         self._last: dict[int, Image.Image] = {}  # at most one entry: the last frame of the scene before this one
         self._wm = self._make_watermark(spec.get("watermark"))
@@ -221,7 +223,11 @@ class Timeline:
 
     def _scene_frame(self, i: int, lt: float) -> Image.Image:
         sc = self.scenes[i]
+        t0 = time.perf_counter()
         img = sc.frame(lt)
+        spent = self.draw_seconds.setdefault(str(sc.spec.get("type")), [0.0, 0])
+        spent[0] += time.perf_counter() - t0
+        spent[1] += 1
         if i in self._caps:
             pill, mask = self._caps[i]
             a = ease_out((lt - self._cap_from.get(i, 0.35)) / 0.25)
@@ -484,6 +490,8 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
     `contact_frames` sets how many stills per scene the contact sheet has (default: two). `only` (sorted, unique
     scene numbers) renders just those scenes, cut out of the full video: same plan, partial frames; the outputs get
     `-scenes-<label>` names and no poster is written."""
+    clock = time.perf_counter
+    t_start = clock()
     ffmpeg = ffmpeg_exe()
     if ffmpeg is None:
         raise RenderError("ffmpeg not found. Install it (macOS: brew install ffmpeg; Debian/Ubuntu: sudo apt install "
@@ -506,6 +514,7 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
             clips = voice_mod.prepare_narration(spec, rt.voice, cache, lambda p: resolve_local(p, Path(spec.get("_dir", ".")), rt.roots))
         except (voice_mod.VoiceError, UnsafeInput) as e:
             raise RenderError(f"voiceover: {e}") from e
+        t_voice = clock()
         # The spec limits were checked on load; check again now that narration has stretched the scenes and beat
         # snapping has rounded them, and in case the caller never validated. Absolute limits always apply.
         limits = spec.get("limits") or {}
@@ -606,16 +615,24 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         except OSError as e:
             errlog.close()
             raise RenderError(f"cannot run ffmpeg at {ffmpeg}: {e}") from e
+        t_frames = clock()
+        t_draw = t_pipe = 0.0
         try:
             for (n0, n1), (a, _) in zip(frame_runs, spans or [(0.0, total)]):
                 for n in range(n0, n1):
+                    t0 = clock()
                     # the poster doubles as frame 0 (thumbnail); a slice has no poster
                     img = poster if n == 0 and only is None else tl.frame_at(max(n / fps, a))
-                    proc.stdin.write(img.convert("RGB").tobytes())
+                    t1 = clock()
+                    # converting an RGB frame to RGB only copies it: skip that
+                    proc.stdin.write((img if img.mode == "RGB" else img.convert("RGB")).tobytes())
+                    t_draw += t1 - t0
+                    t_pipe += clock() - t1
             proc.stdin.close()
         except BrokenPipeError:
             pass
         rc = proc.wait()
+        t_encoded = clock()
         errlog.close()
         if rc != 0:
             raise RenderError("ffmpeg failed:\n" + (work / "ffmpeg.log").read_text(errors="replace")[-1500:])
@@ -625,6 +642,14 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
             sheet = contact_sheet(tl, out / f"contact{tag}.png", fracs=fracs, scenes=only)
     from .lineart_scene import _Page
     _Page.close_all()   # free Chromium (and let a later format capture a `shot`) before the next format starts
-    return {"video": video, "poster": None if only is not None else out / "poster.jpg", "contact": sheet, "srt": srt,
+    t_end = clock()
+    profile = {"frames": n_frames,
+               "stages": [("narration and timing", t_voice - t_start), ("layout, music and poster", t_frames - t_voice),
+                          ("draw frames", t_draw), ("send frames to ffmpeg", t_pipe),
+                          ("finish encoding", t_encoded - t_frames - t_draw - t_pipe),
+                          ("contact sheet and cleanup", t_end - t_encoded)],
+               "total": t_end - t_start,
+               "scene_types": {k: tuple(v) for k, v in tl.draw_seconds.items()}}
+    return {"profile": profile, "video": video, "poster": None if only is not None else out / "poster.jpg", "contact": sheet, "srt": srt,
             "seconds": out_seconds, "full_seconds": total, "windows": [(a, b, s0, s1) for (a, b), (s0, s1) in zip(windows, spans)],
             "warnings": tl.warnings, "size": (W, H)}
