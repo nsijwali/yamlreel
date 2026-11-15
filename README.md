@@ -262,6 +262,18 @@ stderr says what was cut, for example `only: scenes 2-4 of 0-7, 12.40-21.95s of 
 Narration is read from the cache and only missing clips are synthesised, so after one render, editing scene 3 and running
 `--only 3` synthesises just scene 3. With no voice server, or `--no-voice`, the same rules apply as for a full render.
 
+To see where a render's time goes, add `--profile`. It prints the time per stage (narration, drawing, sending frames to
+ffmpeg, encoding) and the drawing time per scene type, slowest first:
+
+```text
+profile vertical: 13.2s for 40.5s of video (3.1x real time, 1215 frames)
+  draw frames                   7.04s   53%
+  send frames to ffmpeg         5.66s   43%
+  ...
+    diagram                     4.83s    228 frames    21.2 ms/frame
+    bullets                     0.69s    396 frames     1.7 ms/frame
+```
+
 ## Commands
 
 | Command | What it does |
@@ -272,7 +284,7 @@ Narration is read from the cache and only missing clips are synthesised, so afte
 | `yamlreel script <spec> [--format md\|text] [--out FILE] [--force]` | Prints every scene's kicker, title, caption and narration for review, without rendering; see [Script sheet](#script-sheet). |
 | `yamlreel check-voice <spec> [--out DIR] [--model NAME]` | Transcribes the cached narration clips and compares them with the narration text; see [Checking the voice](#checking-the-voice). |
 | `yamlreel validate <spec>` | Checks a spec and prints its scene count, length and how many scenes are narrated and subtitled, without rendering. |
-| `yamlreel render <spec>` | Renders. Useful flags: `--preview`, `--out DIR`, `--format vertical\|landscape\|square\|all`, `--music koto\|ambient\|lofi\|pulse\|piano\|none\|file.mp3`, `--fps N`, `--contact-frames N`, `--only N,A-B`, `--no-voice`, `--voice-url URL`, `--read-screen`, `--allow-path DIR`, `--allow-private-hosts`. |
+| `yamlreel render <spec>` | Renders. Useful flags: `--preview`, `--out DIR`, `--format vertical\|landscape\|square\|all`, `--music koto\|ambient\|lofi\|pulse\|piano\|none\|file.mp3`, `--fps N`, `--contact-frames N`, `--only N,A-B`, `--profile`, `--no-voice`, `--voice-url URL`, `--read-screen`, `--allow-path DIR`, `--allow-private-hosts`. |
 | `yamlreel config init [--user]` / `config show` | Writes a starter config, or shows the merged settings and the files they came from. |
 | `yamlreel music --style lofi --seconds 30 --out track.wav` | Generates a music track on its own (`--style`, `--bpm`, `--root`, `--scale`, `--seed`; the style supplies the defaults). |
 | `yamlreel audit <video> [--target-lufs -14] [--strict]` | Optional add-on: checks a finished video's loudness, true peak, loop and short-form format; see [Polish add-on](#polish-add-on-optional). |
