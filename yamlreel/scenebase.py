@@ -183,5 +183,9 @@ class Scene:
         """Drop the cached static layers. They are rebuilt on demand, so a scene may be released and drawn again."""
         self._static.clear()
 
+    def prefetch(self, t: float) -> None:
+        """A hint that `frame(t)` is about to be asked for. A scene that waits on something else to draw a frame
+        (a browser) may start on it now; the frame it later returns must be the same either way."""
+
     def frame(self, t: float) -> Image.Image:  # pragma: no cover
         raise NotImplementedError

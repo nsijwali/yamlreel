@@ -428,7 +428,7 @@ scenes:
     items: [Users, Orders, Payments]
 ```
 
-Faceless ink figures with a wobbling pen, in your theme's colours. The text shrinks to fit (with a warning), and a `carry` scene gets about 0.6 s more per item unless you set `seconds`. They need `pip install 'yamlreel[capture]'` and a Chromium or Chrome (`playwright install chromium`, or `chromium_path` in your user config); without them the scene is drawn as a typed line. The drawing library is [line-art-animation](https://github.com/JDhruv14/line-art-animation) by JDhruv14 (MIT), vendored in `yamlreel/lineart/` with its licence.
+Faceless ink figures with a wobbling pen, in your theme's colours. The text shrinks to fit (with a warning), and a `carry` scene gets about 0.6 s more per item unless you set `seconds`. They need `pip install 'yamlreel[capture]'` and a Chromium, Chrome or Edge: `playwright install chromium`, or a Chrome or Edge you already have installed (found on its own), or `chromium_path` in your user config. Without them the scene is drawn as a typed line. Frames are drawn two or three at a time on separate pages of one browser (two on a machine with less than 12 GB of memory; `YAMLREEL_LINEART_PAGES=1` to `4` sets it), and come out the same as when drawn one by one. The drawing library is [line-art-animation](https://github.com/JDhruv14/line-art-animation) by JDhruv14 (MIT), vendored in `yamlreel/lineart/` with its licence.
 
 Two designed sample voices (female and male, American, no real person cloned) are in [`examples/voices/`](https://github.com/nsijwali/yamlreel/tree/main/examples/voices). They are CC-BY-NC (OmniVoice), so credit it and keep them non-commercial.
 

@@ -12,7 +12,7 @@ from PIL import Image, ImageChops, ImageDraw
 
 from yamlreel import lineart_scene
 from yamlreel.cli import main
-from yamlreel.render import ffmpeg_exe
+from yamlreel.render import FRAMES_AHEAD, ffmpeg_exe
 from yamlreel.scenes import SS, downsample
 
 needs_ffmpeg = pytest.mark.skipif(ffmpeg_exe() is None, reason="needs ffmpeg")
@@ -107,8 +107,111 @@ def test_the_direct_capture_gives_the_pixels_of_a_standard_screenshot(tmp_path):
                 pytest.skip("this browser has no direct capture; the standard screenshot is used")
             direct = Image.open(io.BytesIO(holder.png())).convert("RGB")
             assert holder._cdp is not None, "the direct capture failed and fell back"
-            standard = Image.open(io.BytesIO(holder.page.screenshot(type="png"))).convert("RGB")
+            standard = Image.open(io.BytesIO(holder.standard_png())).convert("RGB")
             assert direct.size == (c.W, c.H) == standard.size
             assert ImageChops.difference(direct, standard).getbbox() is None
     finally:
         lineart_scene._Page.close_all()
+
+
+def _browser(tmp_path):
+    """A frame context and the shared line-art browser, or a skip when there is no Chromium."""
+    pytest.importorskip("playwright")
+    from test_lineart import ctx
+    exe = os.environ.get("YAMLREEL_CHROMIUM")
+    c = ctx(tmp_path)
+    c.chromium = exe if exe and Path(exe).exists() else None
+    try:
+        return c, lineart_scene._Page.get(c)
+    except Exception:
+        lineart_scene._Page.close_all()
+        pytest.skip("no Chromium: set YAMLREEL_CHROMIUM, install Chrome, or run `playwright install chromium`")
+
+
+def test_frames_drawn_ahead_are_the_frames_drawn_on_demand(tmp_path):
+    from yamlreel.scenes import build_scene
+    c, holder = _browser(tmp_path)
+    try:
+        for spec in ({"type": "lineart", "text": "Hello there", "seconds": 5.0},
+                     {"type": "lineart", "kind": "carry", "items": ["A", "B"], "seconds": 8.0}):
+            times = [round(0.3 + i / 30, 6) for i in range(0, 120, 7)]
+            plain = build_scene(spec, c)
+            on_demand = [plain.frame(t) for t in times]       # one page, one frame at a time
+            ahead = build_scene(spec, c)
+            drawn = []
+            for i, t in enumerate(times):                      # announced the way the render loop announces frames
+                for m in (range(i + 1, i + FRAMES_AHEAD + 1) if i == 0 else (i + FRAMES_AHEAD,)):
+                    if m < len(times):
+                        ahead.prefetch(times[m])
+                drawn.append(ahead.frame(t))
+            assert holder.dropped == 0, "a frame that was about to be collected was dropped and drawn twice"
+            assert len(holder._tabs) == lineart_scene.TABS and not holder._ahead
+            for a, b in zip(on_demand, drawn):
+                assert a.size == b.size == (c.W, c.H) and ImageChops.difference(a, b).getbbox() is None
+        assert not c.warnings
+    finally:
+        lineart_scene._Page.close_all()
+
+
+def test_frames_asked_for_ahead_and_never_collected_are_dropped(tmp_path):
+    from yamlreel.scenes import build_scene
+    c, holder = _browser(tmp_path)
+    try:
+        scene = build_scene({"type": "lineart", "text": "Hello there", "seconds": 5.0}, c)
+        for i in range(3 * lineart_scene.AHEAD_MAX):
+            scene.prefetch(i / 30)
+        assert len(holder._ahead) == lineart_scene.AHEAD_MAX and holder.dropped == 2 * lineart_scene.AHEAD_MAX
+        assert scene.frame(4.0).size == (c.W, c.H)             # a frame nobody announced is still drawn
+    finally:
+        lineart_scene._Page.close_all()
+
+
+def test_an_installed_chrome_is_tried_when_playwrights_own_chromium_is_missing(monkeypatch):
+    pytest.importorskip("playwright")
+    import asyncio
+    tried = []
+
+    class Chromium:
+        async def launch(self, **kw):
+            tried.append({k: v for k, v in kw.items() if k != "args"})
+            raise RuntimeError(f"cannot start {len(tried)}")
+
+    class Playwright:
+        chromium = Chromium()
+
+    def page(chromium):
+        p = object.__new__(lineart_scene._Page)
+        p.browser = None
+        return p._start(None, chromium)
+
+    monkeypatch.setattr(lineart_scene._Page, "_pw", Playwright())
+    with pytest.raises(RuntimeError, match="cannot start 1"):    # the first error says how to install Chromium
+        asyncio.run(page(None))
+    assert tried == [{}, {"channel": "chrome"}, {"channel": "msedge"}]
+    tried.clear()
+    with pytest.raises(RuntimeError):
+        asyncio.run(page("/opt/my/chrome"))
+    assert tried == [{"executable_path": "/opt/my/chrome"}]      # a browser named in the config is the only one used
+
+
+def test_a_scene_is_told_ahead_about_exactly_the_frames_it_then_draws(tmp_path, monkeypatch):
+    """Scene.prefetch gets the same local times, bit for bit, that Scene.frame gets a few frames later."""
+    from yamlreel import render as render_mod
+    from yamlreel.scenes import TypeScene
+    told, drawn = [], []
+    frame = TypeScene.frame
+    monkeypatch.setattr(TypeScene, "prefetch", lambda self, t: told.append((id(self), t)))
+    monkeypatch.setattr(TypeScene, "frame", lambda self, t: (drawn.append((id(self), t)), frame(self, t))[1])
+    path = tmp_path / "spec.yaml"
+    path.write_text(yaml.safe_dump({"formats": ["vertical"], "scenes": [
+        {"type": "type", "text": "one", "seconds": 1.0}, {"type": "type", "text": "two", "seconds": 1.0}]}))
+    if ffmpeg_exe() is None:
+        pytest.skip("needs ffmpeg")
+    assert main(["render", str(path), "--out", str(tmp_path / "out"), "--preview", "--no-voice", "--music", "none"]) == 0
+    assert told and set(told) <= set(drawn)
+    # every frame of the video was announced, except the first ones; the poster and contact-sheet frames are not
+    assert len(set(drawn) - set(told)) <= render_mod.FRAMES_AHEAD + render_mod.MAX_CONTACT_FRAMES + 2
+
+
+def test_the_look_ahead_buffer_is_larger_than_the_renders_look_ahead():
+    assert lineart_scene.AHEAD_MAX > FRAMES_AHEAD + 1
