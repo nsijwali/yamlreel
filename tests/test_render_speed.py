@@ -63,6 +63,33 @@ def test_downsample_of_a_tall_narrow_shape_matches_too():
     assert ImageChops.difference(layer.resize((540, 960), Image.LANCZOS), mine).getbbox() is None
 
 
+@pytest.mark.parametrize("size", [(540, 960), (270, 480)])
+def test_downsample_at_factor_3_gives_the_pixels_of_a_whole_layer_resize(size):
+    rng = random.Random(size[0] * 3 + size[1])
+    for shapes in (1, 3):
+        layer = Image.new("RGBA", (size[0] * 3, size[1] * 3), (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        for _ in range(shapes):
+            x, y = rng.randint(60, size[0]), rng.randint(60, size[1])
+            d.rounded_rectangle([x, y, x + rng.randint(60, 600), y + rng.randint(40, 500)], rng.randint(4, 60),
+                                fill=(30, 40, 60, 255), outline=(79, 157, 255, 255), width=rng.randint(3, 12))
+        whole = layer.resize(size, Image.LANCZOS)
+        part, at = downsample(layer, 3)
+        mine = Image.new("RGBA", size, (0, 0, 0, 0))
+        mine.paste(part, at)
+        assert at[0] * 3 % 3 == 0 and ImageChops.difference(whole, mine).getbbox() is None
+
+
+def test_downsample_keeps_its_old_import_path_and_default_factor():
+    from yamlreel import scenebase, scenes
+    assert scenes.downsample is scenebase.downsample and scenes.SS is scenebase.SS == 2
+    assert scenes._SS_MARGIN is scenebase._SS_MARGIN == 16
+    layer = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+    ImageDraw.Draw(layer).ellipse([60, 60, 140, 140], fill=(255, 0, 0, 255))
+    assert downsample(layer)[1] == downsample(layer, 2)[1]
+    assert ImageChops.difference(downsample(layer)[0], downsample(layer, 2)[0]).getbbox() is None
+
+
 def test_downsample_of_an_empty_layer_is_none():
     assert downsample(Image.new("RGBA", (200, 200), (0, 0, 0, 0))) is None
 

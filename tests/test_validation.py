@@ -94,6 +94,31 @@ def test_nested_field_tables_cover_every_key_the_data_scenes_read():
     assert set(ArrayScene.STEP_FIELDS) >= {"at", "text", "color", "insert", "push", "pop", "mark", "unmark", "window"}
 
 
+def test_nested_motion_field_tables_cover_every_key_the_scene_reads():
+    """The motion scene reads each element as `el`, each flash as `fl` and each move as `m`; every key must be in the
+    table the validator allows, so a key that works can never be rejected (or one that is rejected be silently
+    dropped)."""
+    from yamlreel import motion_scene as motion
+    from yamlreel.motion_scene import KINDS, MotionScene
+    everything = motion.COMMON_ELEMENT_FIELDS.union(*(k.FIELDS for k in KINDS.values()))
+    read = (_literal_keys(MotionScene.__init__, {"el"}) | _literal_keys(MotionScene._build_element, {"el"})
+            | _literal_keys(MotionScene._group, {"el"}))
+    assert len(read) >= 8, f"el: the AST walk found {sorted(read)}; the guard would be vacuous"
+    assert read <= everything, sorted(read - everything)
+    for name, kind in KINDS.items():
+        own = _literal_keys(kind.prepare, {"el"})
+        assert own or not kind.DRAWN, f"{name}: prepare reads no element key, so the guard would pass vacuously"
+        assert own <= kind.FIELDS | motion.COMMON_ELEMENT_FIELDS, f"{name}: {sorted(own - kind.FIELDS)}"
+    for var, table in (("m", motion.MOVE_FIELDS), ("fl", motion.FLASH_FIELDS), ("ck", motion.CAMERA_FIELDS)):
+        found = _literal_keys(MotionScene.__init__, {var}) | _literal_keys(MotionScene._build_element, {var})
+        assert len(found) >= 3, f"{var}: the AST walk found {sorted(found)}; the guard would be vacuous"
+        assert found <= table, f"{var}: {sorted(found - table)}"
+    em = _literal_keys(MotionScene._build_element, {"em"})
+    assert em and em <= motion.EMPHASIS_FIELDS
+    assert motion.FLASH_FIELDS == DiagramScene.FLASH_FIELDS   # a motion flash is the diagram's cue
+    assert set(motion.QUALITY_FACTORS) == {"draft", "standard", "high"}
+
+
 def test_voice_screen_text_reads_only_known_fields():
     read = _literal_keys(voice.screen_text, {"sc"})
     known = set(Scene.COMMON_FIELDS).union(*(c.FIELDS for c in SCENE_TYPES.values()))
@@ -227,6 +252,25 @@ BASE_SCENES = {
     "grid": {"type": "grid", "cells": ["#.o", ".#."], "seed": 3,
              "steps": [{"at": 0.5, "reveal": "pop"}, {"at": 2, "lose": [[0, 0]]}]},
     "cta": {"type": "cta", "question": "Which one?", "answers": ["x", "y"]},
+    "motion": {"type": "motion", "elements": [{"id": "a", "kind": "rect", "w": 200, "h": 100, "at": 1}],
+               "flash": [{"node": "a", "at": 1.5, "text": "x"}]},
+}
+# one valid element of each motion kind, with a move, an emphasis and an exit: the base of the nested field loops
+MOTION_ELEMENTS = {
+    "rect": {"id": "a", "kind": "rect", "w": 200, "h": 100, "at": 1, "end": 5, "moves": [{"at": 2, "x": 0.4}],
+             "emphasis": "pulse"},
+    "circle": {"id": "a", "kind": "circle", "r": 50, "at": 1, "end": 5, "moves": [{"at": 2, "x": 0.4}],
+               "emphasis": "pulse"},
+    "text": {"id": "a", "kind": "text", "text": "hi there", "at": 1, "end": 5, "moves": [{"at": 2, "x": 0.4}],
+             "emphasis": "pulse"},
+    "group": {"id": "a", "kind": "group", "at": 1, "end": 5, "moves": [{"at": 2, "x": 0.4}], "emphasis": "pulse",
+              "children": [{"kind": "rect", "w": 20, "h": 10, "moves": [{"at": 2, "x": 0.1}]}, {"kind": "text", "text": "x"}]},
+    "arrow": {"id": "a", "kind": "arrow", "from": [0.1, 0.1], "to": [0.5, 0.5], "at": 1, "end": 5,
+              "moves": [{"at": 2, "opacity": 0.5}], "emphasis": "pulse"},
+    "path": {"id": "a", "kind": "path", "points": [[0.1, 0.1], [0.5, 0.5], [0.9, 0.1]], "at": 1, "end": 5,
+             "moves": [{"at": 2, "opacity": 0.5}], "emphasis": "pulse"},
+    "image": {"id": "a", "kind": "image", "source": "pic.png", "w": 100, "at": 1, "end": 5,
+              "moves": [{"at": 2, "x": 0.4}], "emphasis": "pulse"},
 }
 
 
@@ -278,6 +322,7 @@ def test_type_confusion_every_scene_field(value):
     outcome({"scenes": [{**d, "nodes": [value]}]})
     outcome({"scenes": [{**d, "edges": [value]}]})
     outcome({"scenes": [{**d, "flash": [value]}]})
+    _motion_confusion(value)
     from yamlreel.datascenes import ArrayScene, TableScene
     t, a = BASE_SCENES["table"], BASE_SCENES["array"]
     for field in sorted(TableScene.SCAN_FIELDS):
@@ -319,6 +364,37 @@ def test_type_confusion_every_scene_field(value):
         outcome({"scenes": [{**a, "steps": [{"mark": bad}]}]})
 
 
+def _motion_confusion(value):
+    """Every motion element, move, preset, emphasis and flash field takes the odd values without a crash."""
+    from yamlreel import motion_scene as motion
+    m = BASE_SCENES["motion"]
+    for base in MOTION_ELEMENTS.values():
+        for field in sorted(motion.KINDS[base["kind"]].FIELDS | motion.COMMON_ELEMENT_FIELDS):
+            outcome({"scenes": [{**m, "elements": [{**base, field: value}]}]})
+        for field in sorted(motion.MOVE_FIELDS):
+            outcome({"scenes": [{**m, "elements": [{**base, "moves": [{"at": 2, "x": 0.4, field: value}]}]}]})
+        for field in sorted(motion.ENTER_FIELDS):
+            outcome({"scenes": [{**m, "elements": [{**base, "enter": {"type": "fade", field: value}}]}]})
+            outcome({"scenes": [{**m, "elements": [{**base, "exit": {"type": "fade-out", field: value}}]}]})
+        for field in sorted(motion.EMPHASIS_FIELDS):
+            outcome({"scenes": [{**m, "elements": [{**base, "emphasis": {"type": "pulse", field: value}}]}]})
+        for bad in (value, [value], [[value]]):
+            outcome({"scenes": [{**m, "elements": [{**base, "moves": bad}]}]})
+    for field in sorted(motion.FLASH_FIELDS):
+        outcome({"scenes": [{**m, "flash": [{"node": "a", "at": 1.5, field: value}]}]})
+    for bad in (value, [value], [[value]]):
+        outcome({"scenes": [{**m, "elements": bad}]})
+        outcome({"scenes": [{**m, "flash": bad}]})
+        outcome({"scenes": [{**m, "camera": bad}]})
+    for field in sorted(motion.CAMERA_FIELDS):
+        outcome({"scenes": [{**m, "camera": [{"at": 1, field: value}]}]})
+    for bad in (value, [value], [[value]]):
+        outcome({"scenes": [{**m, "elements": [{"kind": "group", "children": bad}]}]})
+        outcome({"scenes": [{**m, "elements": [{**MOTION_ELEMENTS["arrow"], "from": bad}]}]})
+        outcome({"scenes": [{**m, "elements": [{**MOTION_ELEMENTS["path"], "points": bad}]}]})
+    outcome({"scenes": [{**m, "elements": [{"kind": "group", "children": [{"kind": "group", "children": [value]}]}]}]})
+
+
 def test_every_table_field_has_a_checker_that_rejects_a_mapping():
     """`{}` is valid for no scene, node, edge or flash field, so a field without a real check would let it pass."""
     for t, cls in SCENE_TYPES.items():
@@ -336,6 +412,29 @@ def test_every_table_field_has_a_checker_that_rejects_a_mapping():
     for field in DiagramScene.FLASH_FIELDS:
         with pytest.raises(SpecError):
             validate({"scenes": [{**d, "flash": [{"node": "a", field: {}}]}]})
+    from yamlreel import motion_scene as motion
+    m = BASE_SCENES["motion"]
+    for base in MOTION_ELEMENTS.values():
+        for field in motion.KINDS[base["kind"]].FIELDS | motion.COMMON_ELEMENT_FIELDS:
+            with pytest.raises(SpecError):
+                validate({"scenes": [{**m, "elements": [{**base, field: {}}]}]})
+        for table, key, extra in ((motion.MOVE_FIELDS, "moves", {"at": 2, "x": 0.4}),):
+            for field in table:
+                with pytest.raises(SpecError):
+                    validate({"scenes": [{**m, "elements": [{**base, key: [{**extra, field: {}}]}]}]})
+        for field in motion.ENTER_FIELDS:
+            for key, name in (("enter", "fade"), ("exit", "fade-out")):
+                with pytest.raises(SpecError):
+                    validate({"scenes": [{**m, "elements": [{**base, key: {"type": name, field: {}}}]}]})
+        for field in motion.EMPHASIS_FIELDS:
+            with pytest.raises(SpecError):
+                validate({"scenes": [{**m, "elements": [{**base, "emphasis": {"type": "pulse", field: {}}}]}]})
+    for field in motion.FLASH_FIELDS:
+        with pytest.raises(SpecError):
+            validate({"scenes": [{**m, "flash": [{"node": "a", "at": 1.5, field: {}}]}]})
+    for field in motion.CAMERA_FIELDS:
+        with pytest.raises(SpecError):
+            validate({"scenes": [{**m, "camera": [{"at": 1, field: {}}]}]})
     assert set(TOP_CHECKS) == specs.SHARED_KEYS | {"scenes"}
 
 

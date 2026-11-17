@@ -398,6 +398,26 @@ def energy_sections(spec: dict[str, Any], starts: list[float], durations: list[f
             for sc, s, d in zip(spec["scenes"], starts, durations)]
 
 
+def scene_cues(spec: dict[str, Any], starts: list[float], fps: int, durations: list[float] | None = None,
+               warn: Any = None) -> list[Any]:
+    """The `sfx` cues of every scene on the video's clock, each on a frame boundary (scene start + `at`).
+
+    With `durations`, a cue whose `at` is at or past its scene's (planned) length is dropped, and `warn(message)` is
+    called for it, so a cue never sounds inside a later scene or after the video has ended."""
+    from .sfx import Cue
+    out = []
+    for i, sc in enumerate(spec["scenes"]):
+        for n, c in enumerate(sc.get("sfx") or []):
+            at = float(c["at"])
+            if durations is not None and at >= durations[i]:
+                if warn is not None:
+                    warn(f"scenes[{i}].sfx[{n}]: at {at:g}s is not inside the {durations[i]:.2f}s scene; the cue is dropped")
+                continue
+            t = round((starts[i] + at) * fps) / fps
+            out.append(Cue(t, c["sound"], float(c.get("gain", 1.0)), c.get("seconds"), float(c.get("pitch", 0.0))))
+    return out
+
+
 def speech_regions(clips: dict[int, np.ndarray], starts: list[float]) -> list[tuple[float, float]]:
     """Where each narration clip is heard, as placed by `voice_mod.build_track`."""
     return [(starts[i] + voice_mod.NARRATION_LEAD, starts[i] + voice_mod.NARRATION_LEAD + len(c) / voice_mod.SAMPLE_RATE)
@@ -572,6 +592,22 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
             duck = (speech_regions(clips, tl.starts), float(spec["voiceover"].get("music_level", 0.35)))
         audio = _prepare_audio(spec, total, work, music_override, rt, energy_sections(spec, tl.starts, durations),
                                duck, ffmpeg)
+        mix_numbers = None
+        cues = scene_cues(spec, tl.starts, fps, durations, tl.ctx.warn) if spec.get("mix") is not None else []
+        if spec.get("mix") is not None and (audio or narration or cues):
+            # the `mix:` path: narration, music and scene effects become one mastered track (see mixdown.py)
+            from . import mixdown
+            if audio is not None and audio.parent != work:
+                # a music file the spec named (no ducking made a copy of it): decode it to the mix's mono 44.1 kHz WAV
+                audio = _decode_music(ffmpeg, audio, work / "music-src.wav")
+            level = 1.0 if duck or not narration else float(spec["voiceover"].get("music_level", 0.35))
+            try:
+                audio, mix_numbers = mixdown.master(work, ffmpeg, total, narration, audio, cues,
+                                                    spec["mix"], float(spec["music"].get("volume", 0.9)), level,
+                                                    int(spec["music"].get("seed", 0) or 0))
+            except mixdown.MixError as e:
+                raise RenderError(f"mix: {e}") from e
+            narration = None
         poster = tl.frame_at(tl.poster_time())   # also checks poster.scene
         if only is None:
             poster.convert("RGB").save(out / "poster.jpg", quality=92)
@@ -586,7 +622,15 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
             # script that pulls in other files. Only accept real audio containers, local files only.
             cmd += ["-protocol_whitelist", "file", "-format_whitelist", AUDIO_FORMATS, "-i", str(a)]
         cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"]
-        if inputs:
+        if inputs and mix_numbers is not None:    # already mixed and mastered: just cut it to length
+            whole = f"atrim=0:{total:.3f},asetpts=PTS-STARTPTS"
+            cut = _cut_audio("a", [(n0 / fps, n1 / fps) for n0, n1 in frame_runs]) if only is not None else None
+            if cut:
+                cmd += ["-filter_complex", f"[1:a]{whole}[a];{cut}", "-map", "0:v", "-map", "[out]"]
+            else:
+                cmd += ["-af", whole]
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+        elif inputs:
             vol = float(spec["music"].get("volume", 0.9))
             fade_out = max(0.0, total - 2.0)
             music_f = (f"atrim=0:{total:.3f},asetpts=PTS-STARTPTS,volume={{vol}},"
@@ -686,4 +730,4 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
                "scene_types": {k: tuple(v) for k, v in tl.draw_seconds.items()}}
     return {"profile": profile, "video": video, "poster": None if only is not None else out / "poster.jpg", "contact": sheet, "srt": srt,
             "seconds": out_seconds, "full_seconds": total, "windows": [(a, b, s0, s1) for (a, b), (s0, s1) in zip(windows, spans)],
-            "warnings": tl.warnings, "size": (W, H)}
+            "warnings": tl.warnings, "size": (W, H), "mix": mix_numbers}

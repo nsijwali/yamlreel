@@ -37,6 +37,7 @@ STYLE_DEFAULTS: dict[str, dict[str, object]] = {
     "lofi": {"bpm": 78, "root": "D", "scale": "dorian"},
     "pulse": {"bpm": 100, "root": "A", "scale": "minor"},
     "piano": {"bpm": 76, "root": "G", "scale": "major"},
+    "drive": {"bpm": 104, "root": "D", "scale": "minor"},
 }
 ENERGY_LEVELS = {"low": 0, "mid": 1, "high": 2}
 NOTE_OFFSETS = {"C": 0, "C#": 1, "D": 2, "Eb": 3, "E": 4, "F": 5, "F#": 6, "G": 7, "Ab": 8, "A": 9, "Bb": 10, "B": 11}
@@ -147,7 +148,7 @@ def with_style(music: dict, style: str) -> dict:
 BLOCK_SECONDS = 30
 MAX_NOTE = 12.0          # longest event, release included; also the width of the carry between blocks
 LAYERS = 3               # 0 always on, 1 from `mid`, 2 at `high`
-SYNTH_STYLES = ("ambient", "lofi", "pulse", "piano")
+SYNTH_STYLES = ("ambient", "lofi", "pulse", "piano", "drive")
 DUCK_ATTACK = 0.15       # seconds the music takes to go down before speech starts
 DUCK_RELEASE = 0.5       # and to come back after it ends
 DUCK_MIN_GAP = 0.6       # a pause shorter than this keeps the music down
@@ -298,7 +299,55 @@ def _piano(p: _Plan) -> list[Event]:
     return out
 
 
-_BUILDERS = {"ambient": _ambient, "lofi": _lofi, "pulse": _pulse, "piano": _piano}
+def _drive(p: _Plan) -> list[Event]:
+    """Restrained electronic bed: layer 0 a warm pad and a muted eighth-note pulse, layer 1 an eighth-note bass, offbeat
+    hats and a quiet shaker, layer 2 a soft four-on-the-floor kick, claps on 2 and 4 and a high sixteenth arp. The
+    pad, pulse and bass pump against the beat (see `_pump`), which gives the groove without a loud kick."""
+    prog = _progression(len(p.scale))
+    out: list[Event] = []
+    bar_len = 4 * p.beat
+    e8, e16 = p.beat / 2, p.beat / 4
+    bar = 0
+    while bar * bar_len < p.duration:
+        t0 = bar * bar_len
+        deg = prog[bar % 4]
+        triad = _chord(p.scale, 50 + p.root, deg)                       # around D3-A4
+        for m in triad:
+            out.append(_ev(t0, bar_len + 0.6, "pad", m, 0.42, 0, p.rng))
+        root = triad[0]
+        for k in range(8):
+            out.append(_ev(t0 + k * e8, 0.28, "pluck", root + 12 + (7 if k in (3, 6) else 0), 0.42 if k % 2 == 0 else 0.3, 0, p.rng))
+        bass_note = 38 + p.root + p.scale[deg % len(p.scale)]
+        for k in range(8):
+            out.append(_ev(t0 + k * e8, e8 * 0.9, "bass", bass_note + (12 if k == 7 else 0), 0.8 if k % 2 == 0 else 0.6, 1, p.rng))
+            if k % 2 == 1:
+                out.append(_ev(t0 + k * e8, 0.07, "hat", 0, 0.42, 1, p.rng))
+        for k in range(16):
+            out.append(_ev(t0 + k * e16, 0.08, "shaker", 0, 0.5 if k % 4 == 2 else 0.3, 1, p.rng))
+        for b in range(4):
+            out.append(_ev(t0 + b * p.beat, 0.4, "kick", 0, 0.42, 2, p.rng))
+        for b in (1, 3):
+            out.append(_ev(t0 + b * p.beat, 0.25, "clap", 0, 0.5, 2, p.rng))
+        tones = [triad[0] + 24, triad[1] + 24, triad[2] + 24, triad[1] + 24]
+        for k in range(16):
+            out.append(_ev(t0 + k * e16, 0.22, "pluck", tones[(k + bar) % 4], 0.32 if k % 4 else 0.42, 2, p.rng))
+        bar += 1
+    return out
+
+
+PUMP_DEPTH = 0.42      # how far the pad, pulse and bass dip on each beat (about -4.7 dB)
+PUMP_RELEASE = 0.11    # seconds the dip takes to recover
+
+
+def _pump(start: int, n: int, beat: float) -> np.ndarray:
+    """Sidechain-style gain for samples start..start+n: a dip on every beat that recovers over PUMP_RELEASE."""
+    t = (start + np.arange(n)) / SR
+    ph = np.mod(t, beat)
+    attack = np.clip(ph / 0.004, 0, 1)                   # 4 ms into the dip, so it never clicks
+    return (1.0 - PUMP_DEPTH * attack * np.exp(-ph / PUMP_RELEASE)).astype(np.float32)
+
+
+_BUILDERS = {"ambient": _ambient, "lofi": _lofi, "pulse": _pulse, "piano": _piano, "drive": _drive}
 
 
 def build_events(style: str, duration: float, bpm: float, root: str, scale: str, seed: int) -> list[Event]:
@@ -309,7 +358,7 @@ def build_events(style: str, duration: float, bpm: float, root: str, scale: str,
 
 # peak gain of each voice before the style's mix; kept here so the voices stay at plain amplitudes
 _VOICE_GAIN = {"pad": 0.30, "bell": 0.35, "sub": 0.55, "epiano": 0.16, "kick": 0.85, "snare": 0.5, "hat": 0.35,
-               "pluck": 0.30, "piano": 0.22}
+               "pluck": 0.30, "piano": 0.22, "bass": 0.34, "clap": 0.32, "shaker": 0.30}
 
 
 def _render_event(e: Event) -> np.ndarray:
@@ -331,6 +380,12 @@ def _render_event(e: Event) -> np.ndarray:
         x = synth.hat(rng, e.dur)
     elif e.voice == "pluck":
         x = synth.soft_pluck(hz, e.dur)
+    elif e.voice == "bass":
+        x = synth.bass(hz, e.dur)
+    elif e.voice == "clap":
+        x = synth.clap(rng, e.dur)
+    elif e.voice == "shaker":
+        x = synth.shaker(rng, e.dur)
     else:  # piano
         x = synth.partials(hz, e.dur, [1 / k ** 1.1 for k in range(1, 11)], decay=1.1, inharmonicity=0.0004,
                            decay_slope=0.35)
@@ -343,7 +398,7 @@ def _render_event(e: Event) -> np.ndarray:
 
 
 # (pre-gain into the soft clip, reverb level) per style, set so a track peaks at about 0.75
-_STYLE_MIX = {"ambient": (1.6, 0.6), "lofi": (1.1, 0.25), "pulse": (1.3, 0.35), "piano": (1.5, 0.5)}
+_STYLE_MIX = {"ambient": (1.6, 0.6), "lofi": (1.1, 0.25), "pulse": (1.3, 0.35), "piano": (1.5, 0.5), "drive": (1.25, 0.3)}
 _CEILING = 0.9
 
 
@@ -404,6 +459,10 @@ def blocks(style: str, duration: float, bpm: float = 72, root: str = "D", scale:
             layers[0, :n] += (synth.air(bar, n) * 0.5 * (0.6 + 0.4 * np.sin(TWO_PI_20 * tt))).astype(np.float32)
         elif style == "lofi":
             layers[0, :n] += (synth.crackle(bar, n, 6.0) * 0.12).astype(np.float32)
+        if style == "drive":
+            pump = _pump(b0, n, 60.0 / bpm)
+            layers[0, :n] *= pump
+            layers[1, :n] *= pump
         mix = layers[0, :n].copy()
         for i in range(0, n, SR * 5):                     # gate the layers in 5 s slices: small temporaries
             sl = slice(i, min(n, i + SR * 5))

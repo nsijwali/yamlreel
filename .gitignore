@@ -19,3 +19,5 @@ yamlreel.config.yaml
 # pre-0.2 names
 vidgen-output/
 vidgen.config.yaml
+# macOS folder metadata
+.DS_Store

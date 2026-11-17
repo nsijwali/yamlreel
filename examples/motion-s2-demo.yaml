@@ -1,0 +1,86 @@
+# Motion scene demo (S2): draw-on (path, arrow, rect outline, circle arc, type-on), groups and a camera zoom.
+# Scene 0 is a diagram for comparison, so `--profile` shows motion and diagram ms/frame in one run.
+# Render:   yamlreel render examples/motion-s2-demo.yaml --out out --preview --no-voice --music none --profile
+# One scene: add --only 3 (the camera), --only 2 (groups) or --only 1 (draw-on).
+meta:
+  title: Motion layer demo, part 2
+  tags: [motion, demo]
+theme: midnight
+formats: [vertical]
+transition: {type: cut}
+scenes:
+  - type: diagram
+    title: A cache in front of a database
+    seconds: 6
+    nodes:
+      - {id: app, label: App, x: 0.5, y: 0.25, at: 0.4}
+      - {id: cache, label: Cache, kind: cache, x: 0.3, y: 0.55, at: 1.0}
+      - {id: db, label: Database, kind: db, x: 0.7, y: 0.55, at: 1.6}
+    edges:
+      - {from: app, to: cache, at: 1.6}
+      - {from: app, to: db, at: 2.0, dashed: true}
+
+  - type: motion                       # draw-on
+    title: Drawn on
+    seconds: 6
+    elements:
+      - {id: card, kind: rect, w: 700, h: 170, y: 0.25, at: 0.4, enter: {type: draw, seconds: 1.4}}
+      - {kind: text, text: "SELECT * FROM users", font: mono, size: 44, y: 0.25, at: 1.2, enter: {type: draw, seconds: 1.6, easing: linear}}
+      - {id: ring, kind: circle, r: 110, fill: card, stroke: accent2, stroke_width: 6, y: 0.5, at: 1.0, enter: {type: draw, seconds: 1.2}}
+      - {kind: arrow, from: card, to: ring, at: 2.4, enter: draw}
+      - kind: path
+        points: [[0.12, 0.8], [0.3, 0.72], [0.5, 0.86], [0.7, 0.7], [0.88, 0.8]]
+        smooth: true
+        color: accent
+        stroke_width: 7
+        at: 2.8
+        enter: {type: draw, seconds: 1.8}
+
+  - type: motion                       # input -> action -> result, with groups
+    title: A cache hit
+    seconds: 6
+    stagger: 0.5
+    elements:
+      - id: input
+        kind: group
+        y: 0.24
+        enter: slide-up
+        children:
+          - {kind: rect, w: 760, h: 150}
+          - {kind: text, text: "GET /user/42", font: mono, size: 54}
+      - id: cache
+        kind: group
+        y: 0.48
+        at: 0.6
+        enter: pop
+        children:
+          - {kind: circle, r: 110, fill: card, stroke: accent2, stroke_width: 5}
+          - {kind: text, text: cache, size: 44}
+      - {kind: arrow, from: input, to: cache, at: 1.0, enter: draw}
+      - {kind: circle, r: 16, fill: fg, y: 0.31, at: 1.6, end: 2.7, moves: [{at: 2.0, seconds: 0.7, y: 0.40}]}
+      - id: result
+        kind: group
+        y: 0.70
+        at: 2.9
+        enter: pop
+        emphasis: {type: pulse, at: 3.7, repeat: 2}
+        children:
+          - {kind: rect, w: 640, h: 140, stroke: accent}
+          - {kind: text, text: "HIT in 0.3 ms", size: 56, color: accent}
+    flash:
+      - {node: cache, at: 2.7, text: found, color: accent}
+
+  - type: motion                       # camera zoom on a diagram
+    title: Where the time goes
+    seconds: 7
+    elements:
+      - {id: app, kind: group, y: 0.26, children: [{kind: rect, w: 420, h: 130}, {kind: text, text: App, size: 50}]}
+      - {id: db, kind: group, x: 0.28, y: 0.58, children: [{kind: rect, w: 360, h: 130, stroke: accent}, {kind: text, text: DB, size: 50}]}
+      - {id: cache, kind: group, x: 0.72, y: 0.58, children: [{kind: rect, w: 360, h: 130}, {kind: text, text: Cache, size: 50}]}
+      - {kind: arrow, from: app, to: db, color: accent, dashed: true, at: 1.4, enter: draw}
+      - {kind: arrow, from: app, to: cache, at: 1.8, enter: draw}
+    camera:
+      - {at: 2.6, seconds: 1.2, zoom: 1.8, focus: [0.28, 0.58]}
+      - {at: 5.2, seconds: 1.0, zoom: 1.0, focus: [0.5, 0.5]}
+    flash:
+      - {node: db, at: 4.0, text: "300 ms", color: accent}
