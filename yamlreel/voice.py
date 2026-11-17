@@ -42,7 +42,11 @@ TRIM_KEEP_GAP = 0.15  # ... to this
 DEBREATH_HOP = 0.01  # seconds between analysis frames when looking for breaths
 DEBREATH_WIN = 0.03  # seconds per analysis frame
 DEBREATH_FLOOR_DB = -58.0  # quieter than this (full scale) is silence, which trim handles, not a breath
-DEBREATH_CEIL_DB = 17.0  # a breath is at least this far under the clip's 95th-percentile frame level
+DEBREATH_CEIL_DB = 24.0  # a breath is at least this far under the clip's 95th-percentile frame level
+# (17 dB let speech through: vowel edges where the voicing test misfires sat 9-17 dB under; measured breaths 33-40)
+DEBREATH_GUARD_MS = 20  # kept at a run's edge where it touches sound (a fricative onset, a final release)
+DEBREATH_MIN_CENTROID_HZ = 1500.0  # a breath is noise-like near 2 kHz; lower centroids are vowel edges or a soft f, kept
+DEBREATH_MAX_CENTROID_HZ = 4000.0  # measured breaths sit near 2 kHz; f, s and sh sit far higher and are kept
 DEBREATH_VOICED = 0.45  # normalised autocorrelation at or above this over 60-400 Hz means voiced (speech)
 DEBREATH_PITCH_HZ = (60, 400)  # lag range searched for voicing
 DEBREATH_MIN_MS = 90  # a quiet unvoiced run shorter than this is kept (consonants, word edges)
@@ -249,14 +253,17 @@ def trim_silence(samples: np.ndarray, speed: float = 1.0) -> np.ndarray:
     return np.concatenate(pieces)
 
 
-def debreath(samples: np.ndarray) -> np.ndarray:
+def debreath(samples: np.ndarray, sr: int = SAMPLE_RATE) -> np.ndarray:
     """Replace breaths with silence, in place: the clip keeps its length (shortening is trim's job).
 
     A breath is a run of at least DEBREATH_MIN_MS of frames that are unvoiced (low autocorrelation over the
     pitch range) and quiet, but not silent: above DEBREATH_FLOOR_DB and DEBREATH_CEIL_DB under the clip's own
     95th-percentile level, so quiet and loud voices both work. Runs get DEBREATH_FADE_MS fades on each side.
+    A run must also sound like a breath: its spectral centroid lies between DEBREATH_MIN_CENTROID_HZ and
+    DEBREATH_MAX_CENTROID_HZ (vowel edges are lower, f/s/sh higher), and DEBREATH_GUARD_MS is kept on any side where it
+    touches sound, so word-initial fricatives and word-final releases survive. `sr` is the clip's sample rate.
     A clip with no breath (or no frames) is returned as it came."""
-    hop, win = int(DEBREATH_HOP * SAMPLE_RATE), int(DEBREATH_WIN * SAMPLE_RATE)
+    hop, win = int(DEBREATH_HOP * sr), int(DEBREATH_WIN * sr)
     n = (len(samples) - win) // hop if len(samples) >= win else 0
     if n <= 0:
         return samples
@@ -269,7 +276,7 @@ def debreath(samples: np.ndarray) -> np.ndarray:
     idx = np.flatnonzero(cand)  # only these need the (costly) voicing check
     if not len(idx):
         return samples
-    lo, hi = SAMPLE_RATE // DEBREATH_PITCH_HZ[1], SAMPLE_RATE // DEBREATH_PITCH_HZ[0]
+    lo, hi = sr // DEBREATH_PITCH_HZ[1], sr // DEBREATH_PITCH_HZ[0]
     nfft = 1 << (2 * win - 1).bit_length()
     voiced = np.zeros(n, dtype=bool)
     for a in range(0, len(idx), DEBREATH_CHUNK):
@@ -282,11 +289,24 @@ def debreath(samples: np.ndarray) -> np.ndarray:
     cand &= ~voiced
     edges = np.diff(np.concatenate(([0], cand.astype(np.int8), [0])))
     starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+    # Where a run touches sound (not silence), keep DEBREATH_GUARD_MS on that side: word-initial fricatives and
+    # word-final releases are unvoiced and quiet too, and they always sit against speech; a breath is longer than both.
+    guard = int(round(DEBREATH_GUARD_MS / 1000 / DEBREATH_HOP))
+    sound = db > DEBREATH_FLOOR_DB
+    starts = np.array([s + (guard if s > 0 and sound[s - 1] else 0) for s in starts], dtype=int)
+    ends = np.array([e - (guard if e < n and sound[e] else 0) for e in ends], dtype=int)
     keep = (ends - starts) * DEBREATH_HOP * 1000 >= DEBREATH_MIN_MS
+    for k in np.flatnonzero(keep):   # a run must also sound like noise: a low centroid means vowel or nasal energy
+        part = x[int(starts[k]) * hop: (int(ends[k]) - 1) * hop + win].astype(np.float64)
+        power = np.abs(np.fft.rfft(part - part.mean())) ** 2
+        freqs = np.fft.rfftfreq(len(part), 1 / sr)
+        centroid = float((power * freqs).sum() / (power.sum() + 1e-20))
+        if not DEBREATH_MIN_CENTROID_HZ <= centroid <= DEBREATH_MAX_CENTROID_HZ:
+            keep[k] = False
     if not keep.any():
         return samples
     out = x.copy()
-    fade = int(DEBREATH_FADE_MS / 1000 * SAMPLE_RATE)
+    fade = int(DEBREATH_FADE_MS / 1000 * sr)
     for i, j in zip(starts[keep], ends[keep]):
         a, b = int(i) * hop, min((int(j) - 1) * hop + win, len(out))   # j is the first frame after the run
         out[a:b] = 0.0

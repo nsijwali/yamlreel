@@ -30,8 +30,12 @@ def tone(seconds, amp=0.3, hz=220):
 
 
 def noise(seconds, amp=0.01, seed=0):
+    """Breath-like noise: white noise low-passed to a spectral centroid near 2 kHz (as measured on real breaths in
+    cloned-voice clips), at the same RMS as before."""
     rng = np.random.default_rng(seed)
-    return (rng.standard_normal(int(seconds * SAMPLE_RATE)) * amp).astype(np.float32)
+    w = rng.standard_normal(int(seconds * SAMPLE_RATE) + 7)
+    x = np.convolve(w, np.ones(8) / 8, "valid")[: int(seconds * SAMPLE_RATE)]
+    return (x / (x.std() + 1e-12) * amp).astype(np.float32)
 
 
 def secs(a):
@@ -127,3 +131,40 @@ def test_sixty_second_clip_is_fast():
     out = voice_mod.debreath(clip)
     assert time.perf_counter() - t0 < 2.0
     assert len(out) == len(clip) and not np.array_equal(out, clip)
+
+
+# --- consonants survive (the "bucket" -> "bug", "key" -> dropped bug) ----------------------------------------------
+
+def _hiss(seconds, amp, taps, seed=1):
+    """Noise high-passed (`taps` > 0: white minus a `taps`-sample average) like s, sh or a t release."""
+    rng = np.random.default_rng(seed)
+    w = rng.standard_normal(int(seconds * SAMPLE_RATE) + taps)
+    x = w[taps:] - np.convolve(w, np.ones(taps) / taps, "valid")[1:]
+    return (x / x.std() * amp).astype(np.float32)
+
+
+def test_a_word_final_consonant_burst_next_to_silence_survives():
+    # vowel, then a 120 ms "t"/"s"-like release at -35 dBFS, then silence: unvoiced, quiet and long enough to have been
+    # zeroed by the old thresholds; its centroid is far above a breath's
+    clip = np.concatenate([tone(0.6), _hiss(0.12, 0.018, 4), np.zeros(int(0.4 * SAMPLE_RATE), np.float32), tone(0.6)])
+    assert np.array_equal(voice_mod.debreath(clip), clip)
+
+
+def test_a_soft_low_centroid_edge_next_to_a_vowel_survives():
+    # a breathy vowel edge: low-passed noise (centroid well under 1.5 kHz) 18 dB under the speech, against the vowel
+    rng = np.random.default_rng(3)
+    w = rng.standard_normal(int(0.15 * SAMPLE_RATE) + 63)
+    edge = np.convolve(w, np.ones(64) / 64, "valid")[: int(0.15 * SAMPLE_RATE)]
+    edge = (edge / edge.std() * 0.027).astype(np.float32)
+    clip = np.concatenate([np.zeros(int(0.3 * SAMPLE_RATE), np.float32), edge, tone(0.8)])
+    assert np.array_equal(voice_mod.debreath(clip), clip)
+
+
+def test_a_noise_only_breath_in_a_pause_is_removed():
+    # silence, a 250 ms breath (centroid near 2 kHz, about 34 dB under the speech), silence, speech
+    quiet = np.zeros(int(0.2 * SAMPLE_RATE), np.float32)
+    clip = np.concatenate([tone(0.8), quiet, noise(0.25, amp=0.004), quiet, tone(0.8)])
+    out = voice_mod.debreath(clip)
+    s = int(1.0 * SAMPLE_RATE)
+    assert np.abs(out[s + int(0.03 * SAMPLE_RATE): s + int(0.22 * SAMPLE_RATE)]).max() == 0.0
+    assert np.array_equal(out[: int(0.8 * SAMPLE_RATE)], clip[: int(0.8 * SAMPLE_RATE)])
