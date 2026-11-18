@@ -65,18 +65,6 @@ def test_one_picture_larger_than_the_budget_is_refused():
         Owner(b, "a").load(101)
 
 
-def test_pinned_pictures_are_never_released_and_cannot_exceed_the_budget():
-    b = MediaBudget(limit=100)
-    a = Owner(b, "a")
-    a.load(60)
-    b.pin("motion-1", 50, "scenes[1].elements[0].source")
-    assert a.released == 1 and b.used == 50
-    with pytest.raises(MediaBudgetError, match=r"scenes\[2\].*all scenes together"):
-        b.pin("motion-2", 51, "scenes[2].elements[0].source")
-    with pytest.raises(MediaBudgetError):
-        Owner(b, "big").load(51)    # does not fit beside the pinned images
-
-
 # --- contact-sheet pages ----------------------------------------------------------------------------------------
 
 def test_rows_per_page_and_page_names(tmp_path):
@@ -147,19 +135,46 @@ def test_capture_problems_are_still_reported_with_the_scene_before_rendering(tmp
         _timeline(tmp_path, spec)
 
 
-def test_motion_images_count_against_the_budget_of_all_scenes(tmp_path):
+def _motion_ctx(tmp_path: Path):
     from yamlreel.scenebase import Ctx
-    from yamlreel.scenes import build_scene
     from yamlreel.theme import get_theme
+    return Ctx(W=270, H=480, theme=get_theme("midnight"), workdir=tmp_path, base_dir=tmp_path, roots=[tmp_path])
+
+
+def _motion_spec(source: str = "pic.png") -> dict:
+    return validate({"scenes": [{"type": "motion", "seconds": 6, "elements": [
+        {"kind": "image", "source": source, "at": 0, "enter": "none", "w": 800}]}]})["scenes"][0]
+
+
+def test_motion_images_are_decoded_only_while_drawn_and_charged_to_the_budget(tmp_path):
+    from yamlreel.scenes import build_scene
     Image.new("RGBA", (200, 100), (200, 40, 40, 255)).save(tmp_path / "pic.png")
-    spec = validate({"scenes": [{"type": "motion", "seconds": 6, "elements": [
-        {"kind": "image", "source": "pic.png", "at": 0, "enter": "none", "w": 800}]}]})["scenes"][0]
-    ctx = Ctx(W=270, H=480, theme=get_theme("midnight"), workdir=tmp_path, base_dir=tmp_path, roots=[tmp_path])
-    sc = build_scene(spec, ctx)
-    assert ctx.media.used == sc._image_bytes > 0
-    ctx.media.limit = ctx.media.used + 10
-    with pytest.raises(CaptureError, match="all scenes together"):
-        build_scene(spec, ctx)
+    ctx = _motion_ctx(tmp_path)
+    scenes = [build_scene(_motion_spec(), ctx) for _ in range(3)]
+    assert ctx.media.used == 0 and all(sc.retained_bytes() == 0 for sc in scenes)   # building decodes nothing
+    one = scenes[0]._image_bytes
+    ctx.media.limit = one                       # room for one decoded image
+    frames = [sc.frame(1.0).tobytes() for sc in scenes]
+    assert ctx.media.used == one and [sc._images[0].loaded for sc in scenes] == [False, False, True]
+    assert scenes[0].frame(1.0).tobytes() == frames[0]   # decoded again, same pixels
+
+
+def test_many_motion_image_scenes_no_longer_hit_a_whole_render_limit(tmp_path):
+    from yamlreel.scenes import build_scene
+    Image.new("RGBA", (200, 100), (200, 40, 40, 255)).save(tmp_path / "pic.png")
+    ctx = _motion_ctx(tmp_path)
+    one = build_scene(_motion_spec(), ctx)._image_bytes
+    ctx.media.limit = 3 * one   # far fewer bytes than all scenes together: building and drawing still work
+    for _ in range(10):
+        build_scene(_motion_spec(), ctx).frame(1.0)
+    assert ctx.media.peak <= 3 * one
+
+
+def test_a_motion_image_problem_is_still_reported_at_build_time_with_its_path(tmp_path):
+    from yamlreel.scenes import build_scene
+    (tmp_path / "bad.png").write_bytes(b"not an image")
+    with pytest.raises(CaptureError, match=r"elements\[0\]\.source: cannot read bad.png"):
+        build_scene(_motion_spec("bad.png"), _motion_ctx(tmp_path))
 
 
 # --- narration is checked as it grows ---------------------------------------------------------------------------
@@ -269,3 +284,41 @@ def test_peak_rss_tracks_the_working_set_not_the_scene_count(tmp_path):
     one = 4000 * 3000 * 3   # one decoded shot: 36 MB
     # Eager decoding holds all ten (8 more shots, about 290 MB more); on demand stays near two.
     assert large - small < 2 * one, f"peak RSS grew {(large - small) / 2**20:.0f} MB from 2 to 10 shot scenes"
+
+
+MOTION_RSS_PROBE = textwrap.dedent('''
+    import resource, sys
+    from pathlib import Path
+    from yamlreel.config import Config
+    from yamlreel.specs import validate
+    from yamlreel.render import Runtime, Timeline
+    n, work = int(sys.argv[1]), Path(sys.argv[2])
+    spec = validate({"scenes": [{"type": "motion", "seconds": 1.0, "elements": [
+        {"kind": "image", "source": str(work / f"m{k}.png"), "at": 0, "enter": "none", "w": 2000}]} for k in range(n)],
+        "music": {"style": "none"}}, Config())
+    spec["_dir"] = str(work)
+    tl = Timeline(spec, "landscape", work / "cache", 1.0, Runtime(roots=[work]))
+    for i in range(int(tl.total * 4)):
+        tl.frame_at(i / 4)
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    print(peak if sys.platform == "darwin" else peak * 1024)
+''')
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="needs the resource module")
+def test_peak_rss_of_motion_image_scenes_tracks_the_working_set(tmp_path):
+    for k in range(10):
+        Image.new("RGBA", (3000, 3000), (k * 20, 90, 160, 255)).save(tmp_path / f"m{k}.png", compress_level=1)
+    probe = tmp_path / "probe.py"
+    probe.write_text(MOTION_RSS_PROBE)
+    root = Path(__file__).resolve().parents[1]
+
+    def peak(n: int) -> int:
+        done = subprocess.run([sys.executable, str(probe), str(n), str(tmp_path)], capture_output=True, text=True,
+                              cwd=root, timeout=300)
+        assert done.returncode == 0, done.stderr
+        return int(done.stdout.split()[-1])
+
+    one = 2000 * 2000 * 4   # one pre-scaled image: 16 MB; pinning all ten held about 128 MB more than two
+    small, large = peak(2), peak(10)
+    assert large - small < 3 * one, f"peak RSS grew {(large - small) / 2**20:.0f} MB from 2 to 10 motion-image scenes"

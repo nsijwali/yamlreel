@@ -144,13 +144,15 @@ def test_a_huge_zoomed_image_draws_only_what_the_frame_shows(tmp_path):
     assert sc._lru.bytes <= (1080 + 40) * (1920 + 40) * 4
 
 
-def test_release_keeps_the_pinned_image_and_the_scene_draws_again(tmp_path):
+def test_release_gives_the_image_back_and_the_scene_draws_the_same_frame_again(tmp_path):
+    # hardening review item 4: images are decoded while the scene is drawn, not pinned for the whole render
     picture(tmp_path / "pic.png")
-    sc, _ = make(tmp_path, img(w=300))
+    sc, ctx = make(tmp_path, img(w=300))
     first = sc.frame(1.0).tobytes()
-    pinned = sc._image_bytes
+    held = sc.retained_bytes()
+    assert held >= sc._image_bytes > 0 and ctx.media.used == sc._image_bytes
     sc.release()
-    assert sc.retained_bytes() == pinned > 0
+    assert sc.retained_bytes() == 0 and ctx.media.used == 0
     assert sc.frame(1.0).tobytes() == first
 
 

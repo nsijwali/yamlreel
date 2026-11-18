@@ -26,7 +26,7 @@ from PIL import Image, ImageChops, ImageDraw
 from dataclasses import replace
 
 from . import anim, motion_image, motion_paths
-from .mediabudget import MediaBudgetError
+from .motion_assets import MotionImage
 from .anim import Node, QState
 from .motion_camera import MAX_CAMERA_KEYS, CameraKey, Viewport, camera_at, max_zoom  # noqa: F401
 from .scenebase import _SS_MARGIN, Ctx, Scene, _appear, downsample
@@ -35,7 +35,7 @@ from .textkit import TextBlock, blit, layout_words, wrap
 from .theme import font
 
 MOTION_CACHE_BYTES = 48 * 1024 * 1024     # sprites and text masks together, one LRU per scene
-MAX_IMAGE_BYTES = 48 * 1024 * 1024        # pinned image sources (the image element arrives with S2)
+MAX_IMAGE_BYTES = 48 * 1024 * 1024        # the pre-scaled images of one scene (decoded while it is drawn)
 MAX_LAYER_PIXELS = 12_000_000             # a raster layer, in pixels: 48 MB of RGBA
 MAX_HI_MASK_PIXELS = 4_000_000            # a text mask kept for scaled drawing
 TEXT_SUPER_MAX = 3.0                      # the largest sharpness factor of that mask
@@ -577,10 +577,14 @@ class PathKind(ElementKind):
 
 @dataclass
 class ImagePrep:
-    img: Image.Image    # pre-scaled to the largest size it is drawn at, pinned for the scene's life
+    asset: MotionImage  # pre-scaled to the largest size it is drawn at, decoded on demand (motion_assets.py)
     w: float            # pixels at scale 1
     h: float
     radius: float
+
+    @property
+    def img(self) -> Image.Image:
+        return self.asset.get()
 
 
 class ImageKind(ElementKind):
@@ -590,13 +594,10 @@ class ImageKind(ElementKind):
     def prepare(self, el: dict[str, Any], scene: "MotionScene") -> ImagePrep:
         ctx = scene.ctx
         where = f"{scene.where}.source"
-        raw = motion_image.load(str(el["source"]), ctx.base_dir, ctx.roots, where)
-        w, h = motion_image.display_size(raw.size, el.get("w"), el.get("h"))
-        w, h = w * ctx.u, h * ctx.u
-        bound = scene.scale_bound(el)
-        pre = motion_image.prescale(raw, w * bound, h * bound)
-        scene.pin_image(pre, where)
-        return ImagePrep(pre, w, h, el.get("radius", 0) * ctx.u)
+        asset = MotionImage(str(el["source"]), ctx.base_dir, ctx.roots, where, el.get("w"), el.get("h"), ctx.u,
+                            scene.scale_bound(el), ctx.media)
+        scene.add_image(asset, where)
+        return ImagePrep(asset, asset.w, asset.h, el.get("radius", 0) * ctx.u)
 
     def bbox(self, prep: ImagePrep, q: QState) -> Box:
         hx, hy = _rot_extents(prep.w * q.scale / 2, prep.h * q.scale / 2, q.rotate)
@@ -691,6 +692,7 @@ class MotionScene(Scene):
         self._max_layer = 0
         self._luts: dict[int, list[int]] = {}
         self._image_bytes = 0
+        self._images: list[MotionImage] = []   # decoded while drawn, given back by release()
         self.camera: list[CameraKey] = []
         for ck in spec.get("camera", []):
             fx, fy = ck.get("vfocus", ck.get("focus", [0.5, 0.5])) if ctx.vertical else ck.get("focus", [0.5, 0.5])
@@ -743,15 +745,12 @@ class MotionScene(Scene):
         pop = (el.get("enter") or {}).get("type") == "pop"
         return top * (1.1 if pop else 1.0) * (1.08 if el.get("emphasis") else 1.0) * self._smult
 
-    def pin_image(self, img: Image.Image, where: str) -> None:
-        self._image_bytes += img.width * img.height * 4
+    def add_image(self, asset: MotionImage, where: str) -> None:
+        self._image_bytes += asset.nbytes
         if self._image_bytes > MAX_IMAGE_BYTES:
             raise CaptureError(f"{where}: the images of this scene need {self._image_bytes // 2**20} MB; the limit is "
                                f"{MAX_IMAGE_BYTES // 2**20} MB (MAX_IMAGE_BYTES)")
-        try:   # and against the render's budget for all scenes together (mediabudget.py)
-            self.ctx.media.pin(self, img.width * img.height * 4, where)
-        except MediaBudgetError as e:
-            raise CaptureError(str(e)) from e
+        self._images.append(asset)
 
     def _build_element(self, el: dict[str, Any], at: float, parent: tuple[Node | None, tuple[str, ...], int, int] | None
                        ) -> Node:
@@ -1215,9 +1214,9 @@ class MotionScene(Scene):
     # -- memory -------------------------------------------------------------------------------------------
 
     def retained_bytes(self) -> int:
-        """Bytes this scene holds on to: the LRU of sprites and masks, plus the last frame."""
+        """Bytes this scene holds on to: the LRU of sprites and masks, the last frame and the decoded images."""
         last = 0 if self._last_img is None else self._last_img.width * self._last_img.height * 3
-        return self._lru.bytes + last + self._image_bytes
+        return self._lru.bytes + last + sum(a.nbytes for a in self._images if a.loaded)
 
     def max_layer_pixels(self) -> int:
         """The most pixels any raster layer has had so far (always at most MAX_LAYER_PIXELS)."""
@@ -1231,3 +1230,5 @@ class MotionScene(Scene):
         self._lru.clear()
         self._last_img = None
         self._last_key = None
+        for asset in self._images:
+            asset.drop()
