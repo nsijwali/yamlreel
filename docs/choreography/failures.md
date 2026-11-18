@@ -17,3 +17,10 @@
 - Frames looked fine at one time stamp only: check 0.04 s, 0.5 s, 1 s and every scene start and end.
 - Text was replaced before it could be read: hold >= letters/15 + 1.5 s.
 - Loudness guessed: measure it (-14 LUFS, <= -1 dBTP), and say measured versus assumed.
+- Landscape built by pasting vertical rows: content sat in the top half and card steps touched. Recompute y for 1080 px height (a 130 px card is 0.12 H); centre the block around y 0.45 to 0.5.
+- A ring drawn with `fill: bg` hid the database icon it circled: use `fill: none` with a stroke.
+- A path with `stroke_width` above 40 (for a bar) failed validation: use 40 at most.
+- The hook said "100 million a day" while the maths gave 4,000 a second (333M a day): derive the numbers first, then write the hook.
+- "read-heavy" was spoken as "red heavy": reword homographs ("heavy on reads"); the retake check catches it.
+- A frame-check sheet for a landscape spec drew vertical guides and rendered as vertical: framecheck now takes the spec's format.
+- voicedeliver key lines and beat numbers were hard-coded for one Short: use a `<spec>.delivery.json` sidecar.

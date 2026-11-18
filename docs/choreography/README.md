@@ -15,6 +15,8 @@ Pipeline steps (script, voice, render, deliver) are in `shorts/templates/README.
 | [timeline-burst](timeline-burst/rules.md) | events on a time axis, a reset line, bursts either side, a total |
 | [error-flash](error-flash/rules.md) | the payoff: a red flash, a big code (429) punching in, camera shake |
 | [card-stack](card-stack/rules.md) | a list or option set revealed one card at a time |
+| [number-chain](number-chain/rules.md) | a back-of-envelope result derived on screen, or a 1 : 100 comparison drawn to scale |
+| [ending-card](ending-card/rules.md) | the series ending: next part, follow and subscribe, channel name last |
 
 Failures we already hit, one line each with the fix: [failures.md](failures.md).
 
@@ -33,7 +35,8 @@ Failures we already hit, one line each with the fix: [failures.md](failures.md).
 6. **Entry before motion.** An `emphasis` or the first `move` starts at or after `at + enter.seconds`. Movers use
    `enter: none`. Each move starts after the previous one ends.
 7. **Safe zones (studio theme).** Vertical: every element bottom `y <= 0.69` (zoom included), captions at 0.76 H.
-   Landscape: content `y <= ~0.76`, captions at 0.88 H. Under 60 drawable leaves per scene (groups and split
+   Landscape (1920x1080): content `y <= ~0.76`, captions at 0.88 H; px sizes mean the same pixels as in vertical but y
+   fractions divide 1080, so a 130 px card is 0.12 tall (vertical 0.068): recompute every bottom as `y + h/2/1080`. Under 60 drawable leaves per scene (groups and split
    words count).
 8. **Measure audio, do not guess.** Target -14 LUFS, true peak `<= -1` dBTP via `shorts/audiomeasure.py`. Voice
    comes from `shorts/voicedeliver.py` (Whisper-timed pauses), never `debreath`.
