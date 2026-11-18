@@ -160,8 +160,10 @@ def test_strict_audit_fails_on_length_only_past_180s(monkeypatch, seconds, warni
     assert any(line.startswith("info: tip") for line in rep.lines) is tip
 
 
-def test_square_videos_follow_the_same_rule_and_landscape_is_not_judged(monkeypatch):
-    assert _audit(monkeypatch, 200, 1080, 1080).warnings == 1
+def test_a_long_square_video_is_an_info_line_and_landscape_is_not_judged(monkeypatch):
+    rep = _audit(monkeypatch, 200, 1080, 1080)
+    assert rep.warnings == 0 and any(l.startswith("info: square, 200.0s") for l in rep.lines)
+    assert _audit(monkeypatch, 180, 1080, 1080).warnings == 0
     rep = _audit(monkeypatch, 500, 1920, 1080)
     assert rep.warnings == 0 and not any("Shorts" in line for line in rep.lines)
 
@@ -173,7 +175,15 @@ def test_share_copy_tags_every_eligible_short_and_warns_past_180s():
     text, warns = share_copy(spec, 181, ["vertical"])
     assert "#Shorts" not in text and any("up to 180s" in w for w in warns)
     assert "#Shorts" in share_copy(spec, 30, ["square"])[0]
+    text, warns = share_copy(spec, 200, ["square"])   # same rule as audit: noted there, no share-copy warning
+    assert "#Shorts" not in text and not any("Shorts" in w for w in warns)
     assert "#Shorts" not in share_copy(spec, 30, ["landscape"])[0]
+
+
+@pytest.mark.parametrize("w,h,s,level", [(1080, 1920, 180, "ok"), (1080, 1920, 181, "warn"), (1080, 1080, 181, "info"),
+                                         (1080, 1080, 60, "ok"), (1920, 1080, 999, None)])
+def test_one_length_rule_for_audit_and_share_copy(w, h, s, level):
+    assert shorts.length_level(w, h, s) == level
 
 
 # --- 7. DNS-blocked mapped address ------------------------------------------------------------------------------

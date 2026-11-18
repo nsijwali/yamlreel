@@ -6,9 +6,9 @@ on:
 permissions:
   contents: read
 jobs:
-  # The newest dependency versions pyproject.toml allows, on the oldest and newest supported Python.
+  # The newest dependency versions pyproject.toml allows, on the oldest and newest supported Python. The job keeps
+  # its id and default name, so its checks stay `test (3.10)` and `test (3.12)` (required by the branch rules).
   test:
-    name: latest-compatible (${{ matrix.python }})
     runs-on: ubuntu-latest
     strategy:
       matrix:

@@ -19,6 +19,17 @@ def shorts_eligible(width: int, height: int, seconds: float) -> bool:
     return short_form(width, height) and seconds <= SHORTS_MAX_SECONDS
 
 
+def length_level(width: int, height: int, seconds: float) -> str | None:
+    """How a check reports a video's length: None for landscape (not judged), "ok" for an eligible Short, "warn" for
+    a vertical video past SHORTS_MAX_SECONDS (made for Shorts, but YouTube will not show it as one), "info" for a
+    square one past it (square is common outside Shorts, so it is noted, never a failure)."""
+    if not short_form(width, height):
+        return None
+    if shorts_eligible(width, height, seconds):
+        return "ok"
+    return "warn" if height > width else "info"
+
+
 def eligibility_text(seconds: float) -> str:
     """Why a short-form video of `seconds` is or is not a Short, for reports."""
     if seconds <= SHORTS_MAX_SECONDS:

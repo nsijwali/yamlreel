@@ -168,10 +168,14 @@ def audit_video(video: Path, target_lufs: float = TARGET_LUFS) -> Report:
     fps = f", {info.fps:g} fps" if info.fps else ""
     rep.lines.append(f"info: {info.width}x{info.height}{fps}, {info.seconds:.1f}s, "
                      f"{'with' if info.has_audio else 'no'} audio")
-    if vertical or info.width == info.height:
+    level = shorts.length_level(info.width, info.height, info.seconds)
+    if level is not None:
         shape = "vertical" if vertical else "square"
-        eligible = shorts.shorts_eligible(info.width, info.height, info.seconds)
-        note(eligible, f"{shape}, {info.seconds:.1f}s ({shorts.eligibility_text(info.seconds)})")
+        text = f"{shape}, {info.seconds:.1f}s ({shorts.eligibility_text(info.seconds)})"
+        if level == "info":
+            rep.lines.append(f"info: {text}")   # a long square video: noted, never a strict-audit failure
+        else:
+            note(level == "ok", text)
         tip = shorts.editorial_note(info.seconds)
         if tip:
             rep.lines.append(f"info: {tip}")   # advice, not a warning: --strict does not fail on it

@@ -464,7 +464,7 @@ def share_copy(spec: dict[str, Any], total: float, fmt_list: list[str]) -> tuple
     desc = "\n".join(l for l in lines if l)
     if len(desc) > YT_DESC_MAX:
         warns.append(f"description is {len(desc)} chars; YouTube allows {YT_DESC_MAX}")
-    if "vertical" in fmt_list and total > SHORTS_MAX_SECONDS:
+    if any(shorts_mod.length_level(w, h, total) == "warn" for w, h in short_forms):   # vertical past the limit
         warns.append(f"vertical video is {total:.0f}s; YouTube Shorts allow up to {SHORTS_MAX_SECONDS:g}s, "
                      "beyond that it is a normal video")
     return f"Title: {title}\n\nDescription:\n{desc}\n", warns
