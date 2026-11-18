@@ -492,6 +492,7 @@ def test_the_forwarded_request_asks_for_connection_close_and_keeps_its_body(conn
         up.close()
 
 
+@pytest.mark.browser
 def test_browser_redirect_to_a_mapped_metadata_address_is_a_capture_error(tmp_path):
     """Optional: needs playwright and a Chromium build; skips cleanly otherwise (like the capture test)."""
     pytest.importorskip("playwright")

@@ -14,6 +14,7 @@ import yaml
 from . import __version__
 from . import music as music_mod
 from . import polish as polish_mod
+from . import profilereport
 from . import story as story_mod
 from . import subtitles as subs_mod
 from . import voice as voice_mod
@@ -235,6 +236,8 @@ def cmd_render(args: argparse.Namespace) -> int:
     if args.profile:
         for fmt, r in results.items():
             print(_profile_text(fmt, r["profile"], r["seconds"]))
+            print("\n".join(profilereport.resource_lines(r["profile"], rt.deadlines)))
+        print("\n".join(profilereport.version_lines(rt.chromium)))
     if only is None:
         print(f"share copy: {out_dir / 'share-copy.txt'}")
     return 0

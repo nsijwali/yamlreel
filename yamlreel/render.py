@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw
 
 from . import contactpages
 from . import music as music_mod
-from . import proclife
+from . import proclife, profilereport
 from . import shorts as shorts_mod
 from . import subtitles as subs_mod
 from . import voice as voice_mod
@@ -694,7 +694,8 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
                           ("finish encoding", t_encoded - t_frames - t_draw - t_pipe),
                           ("contact sheet and cleanup", t_end - t_encoded)],
                "total": t_end - t_start,
-               "scene_types": {k: tuple(v) for k, v in tl.draw_seconds.items()}}
+               "scene_types": {k: tuple(v) for k, v in tl.draw_seconds.items()},
+               **profilereport.measure(tl.ctx.media.peak, plan.seconds_spent)}
     return {"profile": profile, "video": video, "poster": None if only is not None else out / "poster.jpg", "contact": sheet, "srt": srt,
             "seconds": out_seconds, "full_seconds": total, "windows": [(a, b, s0, s1) for (a, b), (s0, s1) in zip(windows, spans)],
             "warnings": tl.warnings, "size": (W, H), "mix": mix_numbers}

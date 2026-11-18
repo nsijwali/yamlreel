@@ -6,7 +6,9 @@ on:
 permissions:
   contents: read
 jobs:
+  # The newest dependency versions pyproject.toml allows, on the oldest and newest supported Python.
   test:
+    name: latest-compatible (${{ matrix.python }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -20,10 +22,58 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install ffmpeg and fonts
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
-      - run: pip install -e '.[dev]'
+      - run: pip install --upgrade --upgrade-strategy eager -e '.[dev]'
+      - run: pip check
+      - name: Tool and dependency versions
+        run: python -m yamlreel.diagnostics && pip freeze
       - run: pytest -q
       - name: Build and check the package
         run: |
           pip install build twine
           python -m build
           twine check --strict dist/*
+
+  # The tested snapshot in ci/constraints.txt, so a new dependency release cannot be the only thing that changed.
+  constraints:
+    name: constraints snapshot (3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install ffmpeg and fonts
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - run: pip install -e '.[dev]' -c ci/constraints.txt
+      - run: pip check
+      - name: Tool and dependency versions
+        run: python -m yamlreel.diagnostics && pip freeze
+      - run: pytest -q
+
+  # Headless Chromium installed for real: the browser tests must run here, a skip is a failure.
+  browser:
+    name: browser (Chromium, 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install ffmpeg and fonts
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - run: pip install -e '.[dev,capture]' -c ci/constraints.txt
+      - run: python -m playwright install --with-deps chromium
+      - name: Tool and dependency versions
+        run: python -m yamlreel.diagnostics
+      - name: Browser tests (skips fail; an empty selection fails with exit code 5)
+        env:
+          YAMLREEL_REQUIRE_BROWSER: "1"
+        run: pytest -q -m browser -rs
+      - name: Line-art and capture tests with the real browser
+        env:
+          YAMLREEL_REQUIRE_BROWSER: "1"
+        run: pytest -q tests/test_lineart.py tests/test_render_speed.py tests/test_proclife.py
