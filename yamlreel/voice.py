@@ -10,10 +10,8 @@ extra dependency.
 """
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
-import subprocess
 import tempfile
 import time
 import wave
@@ -25,6 +23,11 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 import numpy as np
+
+from . import ffmpegtools, proclife
+from .atomicfile import write_validated
+from .errorfmt import redact_text, redact_url
+from .voicewire import VoiceError, decode_audio, find_wav_b64 as _find_wav_b64, parse_json as _json, rpc_result  # noqa: F401  (VoiceError is re-exported)
 
 SAMPLE_RATE = 44100
 MAX_NARRATION_SECONDS = 600
@@ -55,10 +58,6 @@ DEBREATH_CHUNK = 1024  # frames per FFT batch, to bound memory
 CACHE_KEY_VERSION = 2  # bump when what a cached clip depends on changes; old files are then never read
 
 
-class VoiceError(RuntimeError):
-    pass
-
-
 @dataclass
 class VoiceServer:
     url: str = DEFAULT_URL
@@ -70,9 +69,9 @@ class VoiceServer:
             u = urlsplit(self.url)
             u.port  # noqa: B018 (raises ValueError for a bad port)
         except ValueError as e:
-            raise VoiceError(f"voice_server.url is not a valid URL ({e}): {self.url!r}") from e
+            raise VoiceError(f"voice_server.url is not a valid URL ({e}): {redact_url(self.url)!r}") from e
         if u.scheme not in ("http", "https") or not u.hostname:
-            raise VoiceError(f"voice_server.url must be an http(s) URL, got {self.url!r}")
+            raise VoiceError(f"voice_server.url must be an http(s) URL, got {redact_url(self.url)!r}")
 
     def identity(self) -> str:
         """`scheme://host:port/path`: which server speaks. Never includes userinfo, query or fragment, so a
@@ -84,7 +83,7 @@ class VoiceServer:
         try:
             explicit = u.port
         except ValueError as e:  # url reassigned to a bad value after construction
-            raise VoiceError(f"voice_server.url is not a valid URL ({e}): {self.url!r}") from e
+            raise VoiceError(f"voice_server.url is not a valid URL ({e}): {redact_url(self.url)!r}") from e
         port = explicit if explicit is not None else (443 if u.scheme == "https" else 80)
         return f"{u.scheme}://{host}:{port}{u.path or '/'}"
 
@@ -119,7 +118,7 @@ class _Session:
             except URLError as e:
                 raise VoiceError(self._unreachable(e.reason, False)) from e
             except OSError as e:
-                raise VoiceError(f"voice server request failed: {e}") from e
+                raise VoiceError(f"voice server request failed: {redact_text(str(e), self.server.url)}") from e
         if len(body) > MAX_RESPONSE_BYTES:
             raise VoiceError("voice server response is too large")
         if "id" not in payload or not body.strip():
@@ -128,46 +127,29 @@ class _Session:
         if "text/event-stream" in ctype:
             for line in text.splitlines():
                 if line.startswith("data:") and line[5:].strip():
-                    msg = json.loads(line[5:])
-                    if msg.get("id") == payload["id"]:
+                    msg = _json(line[5:], payload["method"])
+                    if isinstance(msg, dict) and msg.get("id") == payload["id"]:
                         return msg
             raise VoiceError("voice server sent no reply")
-        return json.loads(text)
+        msg = _json(text, payload["method"])
+        if not isinstance(msg, dict):
+            raise VoiceError(f"voice server reply to {payload['method']} is not a JSON-RPC object")
+        return msg
 
     def _unreachable(self, reason: Any, loading: bool) -> str:
         hint = " It answered 503 every time, so it may still be loading the model; try again shortly." if loading else ""
-        return f"cannot reach the voice server at {self.server.url}: {reason}. Is VoiceStudio running?{hint}"
+        why = redact_text(str(reason), self.server.url)
+        return f"cannot reach the voice server at {redact_url(self.server.url)}: {why}. Is VoiceStudio running?{hint}"
 
     def rpc(self, method: str, params: dict[str, Any]) -> Any:
         self._id += 1
         msg = self._post({"jsonrpc": "2.0", "id": self._id, "method": method, "params": params})
-        if msg is None or "error" in msg:
-            raise VoiceError(f"voice server error on {method}: {(msg or {}).get('error', 'empty reply')}")
-        return msg["result"]
+        return rpc_result(msg, self._id, method)
 
     def start(self) -> None:
         self.rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
                                 "clientInfo": {"name": "yamlreel", "version": "1"}})
         self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
-
-
-def _find_wav_b64(result: dict[str, Any]) -> str | None:
-    """The tool reply carries `wav_base64` as JSON text (or as an audio/resource block)."""
-    for block in result.get("content", []):
-        if block.get("type") == "audio" and block.get("data"):
-            return block["data"]
-        text = block.get("text")
-        if isinstance(text, str):
-            try:
-                data = json.loads(text)
-            except ValueError:
-                continue
-            if isinstance(data, dict):
-                if data.get("error"):
-                    raise VoiceError(f"voice server: {data['error']}")
-                if data.get("wav_base64"):
-                    return data["wav_base64"]
-    return None
 
 
 def synthesize(session: _Session, text: str, voice: str | None, language: str | None) -> bytes:
@@ -183,19 +165,26 @@ def synthesize(session: _Session, text: str, voice: str | None, language: str | 
     if not b64:
         raise VoiceError("voice server reply had no audio (is OMNIVOICE_MCP_OUTPUT_MODE set to 'files'? "
                          "yamlreel needs the default inline mode)")
-    return base64.b64decode(b64, validate=False)
+    return decode_audio(b64)
 
 
 def read_wav(path: Path) -> np.ndarray:
-    """PCM WAV -> mono float32 at SAMPLE_RATE."""
+    """PCM WAV -> mono float32 at SAMPLE_RATE. A missing, unreadable or truncated file is a VoiceError."""
     try:
         with wave.open(str(path), "rb") as w:
             ch, width, rate, n = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
             if n / max(rate, 1) > MAX_NARRATION_SECONDS:
                 raise VoiceError(f"{path.name}: narration clip is longer than {MAX_NARRATION_SECONDS}s")
             raw = w.readframes(n)
+    except FileNotFoundError as e:
+        raise VoiceError(f"narration audio not found: {path}") from e
+    except OSError as e:
+        raise VoiceError(f"{path}: cannot read narration audio ({e.strerror or e})") from e
     except (wave.Error, EOFError) as e:
         raise VoiceError(f"{path.name}: not a readable PCM WAV file ({e})") from e
+    if len(raw) < n * ch * width:
+        raise VoiceError(f"{path.name}: truncated WAV file: the header promises {n} frames, the file holds "
+                         f"{len(raw) // max(ch * width, 1)}")
     if width == 2:
         a = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
     elif width == 1:
@@ -319,8 +308,7 @@ def debreath(samples: np.ndarray, sr: int = SAMPLE_RATE) -> np.ndarray:
 
 def change_speed(samples: np.ndarray, speed: float) -> np.ndarray:
     """Play the clip `speed` times as fast without changing its pitch (ffmpeg `atempo`)."""
-    from . import render  # late: render imports this module
-    ffmpeg = render.ffmpeg_exe()
+    ffmpeg = ffmpegtools.ffmpeg_exe()
     if ffmpeg is None:
         raise VoiceError("voiceover.speed needs ffmpeg and none was found. Install it (macOS: brew install ffmpeg; "
                          "Debian/Ubuntu: sudo apt install ffmpeg) or run: pip install imageio-ffmpeg")
@@ -330,8 +318,8 @@ def change_speed(samples: np.ndarray, speed: float) -> np.ndarray:
         cmd = [ffmpeg, "-loglevel", "error", "-y", "-i", str(src), "-filter:a", f"atempo={speed:.4f}",
                "-ar", str(SAMPLE_RATE), "-ac", "1", str(dst)]
         try:
-            done = subprocess.run(cmd, capture_output=True, timeout=120)
-        except (OSError, subprocess.TimeoutExpired) as e:
+            done = proclife.run(cmd, proclife.subprocess_seconds(), "changing the voiceover speed")
+        except (OSError, proclife.ProcessTimeout) as e:
             raise VoiceError(f"cannot run ffmpeg at {ffmpeg} for voiceover.speed: {e}") from e
         if done.returncode != 0:
             raise VoiceError("ffmpeg failed on voiceover.speed:\n" + done.stderr.decode(errors="replace")[-500:])
@@ -424,16 +412,24 @@ def scene_floors(spec: dict[str, Any], clips: dict[int, np.ndarray]) -> dict[int
 
 
 def prepare_narration(spec: dict[str, Any], server: VoiceServer | None, cache: Path,
-                      resolve_audio) -> dict[int, np.ndarray]:
+                      resolve_audio, max_seconds: float | None = None) -> dict[int, np.ndarray]:
     """Return {scene index: samples} for every scene with narration, and stretch scene lengths to fit.
 
-    `resolve_audio(path)` must confine `narration_audio` files to the allowed folders."""
+    `resolve_audio(path)` must confine `narration_audio` files to the allowed folders. With `max_seconds`, the
+    narration is checked as it grows: once the clips so far need more than that, the rest is not loaded."""
     vo = spec.get("voiceover") or {}
     gap = float(vo.get("gap", 0.5))
     clips: dict[int, np.ndarray] = {}
+    spoken = 0.0   # seconds the narrated scenes so far need at least
     session: _Session | None = None
     cache.mkdir(parents=True, exist_ok=True)
+    last = -1   # the last narrated scene loaded
     for i, sc in enumerate(spec["scenes"]):
+        if (max_seconds is not None and spoken > max_seconds
+                and (sc.get("narration_audio") or narration_text(sc, vo) is not None)):
+            # another clip is about to be loaded, but the ones so far already make the video too long
+            raise VoiceError(f"the narration up to scene {last} already needs {spoken:.1f}s; the limit is "
+                             f"{max_seconds:g}s (limits.max_seconds), so the remaining clips were not loaded")
         if sc.get("narration_audio"):
             samples = read_wav(resolve_audio(sc["narration_audio"]))
         elif (text := narration_text(sc, vo)) is not None:
@@ -447,21 +443,16 @@ def prepare_narration(spec: dict[str, Any], server: VoiceServer | None, cache: P
                 if session is None:
                     session = _Session(server)
                     session.start()
-                audio = synthesize(session, text, vo.get("voice"), vo.get("language"))
-                tmp = cached.with_suffix(".part")
-                tmp.write_bytes(audio)
-                try:
-                    read_wav(tmp)  # reject anything that is not a sane WAV before it is cached
-                except VoiceError:
-                    tmp.unlink(missing_ok=True)
-                    raise
-                tmp.replace(cached)
+                # each writer validates its own temporary file, then moves it into place in one step
+                write_validated(cached, synthesize(session, text, vo.get("voice"), vo.get("language")), read_wav)
             samples = read_wav(cached)
         else:
             continue
         samples = process_clip(samples, vo)  # after the cache, so the cached audio stays raw
         clips[i] = samples
         sc["seconds"] = max(sc["seconds"], min_scene_seconds(samples, gap))
+        spoken += min_scene_seconds(samples, gap)   # a lower bound on the video: snapping never cuts speech
+        last = i
     return clips
 
 

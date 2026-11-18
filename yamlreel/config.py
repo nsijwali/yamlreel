@@ -22,6 +22,7 @@ from typing import Any
 
 import yaml
 
+from .errorfmt import describe_key, describe_value, unknown_key, yaml_problem  # noqa: F401  (re-exported)
 
 MAX_CONFIG_BYTES = 256 * 1024
 CONFIG_FILENAME = "yamlreel.config.yaml"
@@ -29,7 +30,7 @@ CONFIG_FILENAME = "yamlreel.config.yaml"
 # keys any config layer (and the spec) may set
 SHARED_KEYS = {"theme", "themes", "formats", "watermark", "music", "meta", "poster", "fps", "output_dir", "limits", "voiceover", "transition", "subtitles", "mix"}
 # keys only the user config / CLI may set (they widen access)
-TRUSTED_KEYS = {"allow_paths", "allow_private_hosts", "chromium_path", "font_dir", "voice_server"}
+TRUSTED_KEYS = {"allow_paths", "allow_private_hosts", "chromium_path", "font_dir", "voice_server", "timeouts"}
 
 DEFAULTS: dict[str, Any] = {
     "theme": "sumi",
@@ -50,41 +51,6 @@ PATH_KEYS = {("watermark", "image"), ("output_dir",), ("font_dir",), ("chromium_
 
 class ConfigError(ValueError):
     pass
-
-
-def describe_key(key: object) -> str:
-    """A mapping key as it can safely appear in a one-line error message (never walks a nested value)."""
-    if isinstance(key, str):
-        text = key
-    elif key is None or isinstance(key, (bool, int, float)):
-        text = repr(key)
-    else:
-        return type(key).__name__
-    return text if text.isprintable() and len(text) <= 60 else repr(text[:60]) + ("..." if len(text) > 60 else "")
-
-
-def describe_value(v: object) -> str:
-    """Any value, quoted if it is text, short and on one line. Collections are named, never printed."""
-    if isinstance(v, str):
-        return repr(v[:60]) + ("..." if len(v) > 60 else "")
-    return describe_key(v)
-
-
-def yaml_problem(e: yaml.YAMLError) -> str:
-    """A YAML error on one line: the problem and where it is."""
-    if isinstance(e, yaml.MarkedYAMLError):
-        mark = e.problem_mark or e.context_mark
-        where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
-        return " ".join(f"{e.problem or 'invalid YAML'}{where}".split())
-    return " ".join(str(e).split())
-
-
-def unknown_key(path: str, key: object, allowed: Any, what: str, exc: type[Exception] = ValueError,
-                problem: str = "unknown field", note: str = "") -> Exception:
-    """The error for a key that `what` does not have. The one place the "did you mean" hook (issue #13) plugs in,
-    for specs, configs, limits, voice_server and theme entries alike."""
-    from . import specs  # late: specs imports this module
-    return specs._unknown_key(path, key, allowed, what, exc, problem, note)
 
 
 def normalize_music(d: dict[str, Any]) -> None:
@@ -137,6 +103,7 @@ class Config:
     chromium_path: str | None = None
     font_dirs: list[str] = field(default_factory=list)
     voice_server: dict[str, Any] | None = None  # {url, client_id}; user config / CLI only
+    timeouts: dict[str, Any] = field(default_factory=dict)  # process deadlines (proclife.Deadlines); user config only
     sources: list[Path] = field(default_factory=list)
 
 
@@ -232,7 +199,7 @@ def _check_keys(path: Path, raw: dict[str, Any], trusted: bool) -> None:
         if key not in allowed:
             note = ""
             if isinstance(key, str) and key in TRUSTED_KEYS:
-                note = "allow_paths, allow_private_hosts, chromium_path, font_dir and voice_server are only read from the user config or the CLI"
+                note = "allow_paths, allow_private_hosts, chromium_path, font_dir, voice_server and timeouts are only read from the user config or the CLI"
             raise unknown_key("", key, allowed, f"config {path}", ConfigError, "unknown or not-permitted field", note)
 
 
@@ -264,6 +231,11 @@ def load_config(explicit: str | Path | None = None, cwd: Path | None = None,
                 if not isinstance(vs, dict) or set(vs) - {"url", "client_id", "timeout"}:
                     raise ConfigError(f"{path}: voice_server is {{url, client_id, timeout}}")
                 cfg.voice_server = {**(cfg.voice_server or {}), **vs}
+            t = raw.pop("timeouts", None)
+            if t is not None:
+                if not isinstance(t, dict):
+                    raise ConfigError(f"{path}: timeouts must be a mapping of seconds")
+                cfg.timeouts = {**cfg.timeouts, **t}
             fd = raw.pop("font_dir", None)
             if fd:
                 cfg.font_dirs.append(str(fd))
@@ -281,6 +253,8 @@ def load_config(explicit: str | Path | None = None, cwd: Path | None = None,
         cfg.data["limits"] = clamp_limits(cfg.data.get("limits"))
         if cfg.voice_server is not None:
             check_voice_server(cfg.voice_server)
+        from .proclife import Deadlines
+        Deadlines.from_config(cfg.timeouts)   # checked here, so a bad value is a config error before any render
     except ValueError as e:
         raise ConfigError(str(e)) from e
     return cfg

@@ -46,12 +46,18 @@ def _open_image(p: Path) -> Image.Image:
 
 def load_shot(source: str, opts: dict, workdir: Path, base_dir: Path, roots: list[Path],
               allow_private: bool = False, chromium: str | None = None) -> Image.Image:
+    return _open_image(shot_path(source, opts, workdir, base_dir, roots, allow_private, chromium))
+
+
+def shot_path(source: str, opts: dict, workdir: Path, base_dir: Path, roots: list[Path],
+              allow_private: bool = False, chromium: str | None = None) -> Path:
+    """The image file a `shot` shows: the local image, or the cached capture of the page (captured now if needed)."""
     try:
         if not is_url(source):
             p = resolve_local(source, base_dir, roots)
             if not p.is_file():
                 raise CaptureError(f"image not found: {p}")
-            return _open_image(p)
+            return p
 
         if source.startswith("file://"):
             local = resolve_local(file_url_to_path(source), base_dir, roots)
@@ -70,7 +76,7 @@ def load_shot(source: str, opts: dict, workdir: Path, base_dir: Path, roots: lis
     if not cache.exists():
         cache.parent.mkdir(parents=True, exist_ok=True)
         _capture(source, opts, cache, roots, allow_private, chromium)
-    return _open_image(cache)
+    return cache
 
 
 def full_page_clip_height(vw: int, scale: float, page_height: float) -> int:

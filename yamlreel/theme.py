@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PIL import ImageFont
 
-from .config import describe_value, unknown_key
+from .errorfmt import describe_value, unknown_key
 
 Color = tuple[int, int, int]
 

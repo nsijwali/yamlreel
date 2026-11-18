@@ -21,6 +21,8 @@ from typing import Any
 import numpy as np
 import yaml
 
+from . import ffmpegtools, proclife, shorts
+
 SR = 44100
 MAX_EVENTS = 500
 MAX_FILE_SECONDS = 30.0
@@ -37,15 +39,22 @@ class PolishError(ValueError):
 
 
 def _ffmpeg() -> str:
-    from .render import ffmpeg_exe
-    exe = ffmpeg_exe()
+    exe = ffmpegtools.ffmpeg_exe()
     if not exe:
         raise PolishError("ffmpeg was not found. Install it, or run: pip install 'yamlreel[ffmpeg]'")
     return exe
 
 
+def _bounded(cmd: list[str], what: str) -> subprocess.CompletedProcess:
+    """`cmd` with its output captured, stopped after `timeouts.subprocess` seconds (a PolishError)."""
+    try:
+        return proclife.run(cmd, proclife.subprocess_seconds(), what)
+    except proclife.ProcessTimeout as e:
+        raise PolishError(str(e)) from e
+
+
 def _run(cmd: list[str], what: str) -> subprocess.CompletedProcess:
-    done = subprocess.run(cmd, capture_output=True)
+    done = _bounded(cmd, what)
     if done.returncode != 0:
         tail = done.stderr.decode("utf-8", "replace").strip().splitlines()[-3:]
         raise PolishError(f"ffmpeg failed while {what}: {' | '.join(tail) or 'no message'}")
@@ -66,8 +75,7 @@ class Probe:
 def probe(video: Path) -> Probe:
     if not video.is_file():
         raise PolishError(f"{video} is not a file")
-    done = subprocess.run([_ffmpeg(), "-hide_banner", "-protocol_whitelist", "file", "-i", str(video)],
-                          capture_output=True)       # no output file: ffmpeg exits 1 after printing the streams
+    done = _bounded([_ffmpeg(), "-hide_banner", "-protocol_whitelist", "file", "-i", str(video)], "probing the video")       # no output file: ffmpeg exits 1 after printing the streams
     text = done.stderr.decode("utf-8", "replace")
     dur = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
     size = re.search(r"Video:.*?,\s*(\d{2,5})x(\d{2,5})", text)
@@ -92,8 +100,8 @@ def measure_audio(video: Path) -> Audio | None:
     """Integrated loudness, loudness range and true peak (EBU R128), or None when the video has no audio."""
     if not probe(video).has_audio:
         return None
-    done = subprocess.run([_ffmpeg(), "-hide_banner", "-nostats", "-protocol_whitelist", "file", "-i", str(video),
-                           "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"], capture_output=True)
+    done = _bounded([_ffmpeg(), "-hide_banner", "-nostats", "-protocol_whitelist", "file", "-i", str(video),
+                     "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"], "measuring the loudness")
     if done.returncode != 0:
         raise PolishError("ffmpeg could not measure the audio")
     text = done.stderr.decode("utf-8", "replace")
@@ -159,9 +167,17 @@ def audit_video(video: Path, target_lufs: float = TARGET_LUFS) -> Report:
     fps = f", {info.fps:g} fps" if info.fps else ""
     rep.lines.append(f"info: {info.width}x{info.height}{fps}, {info.seconds:.1f}s, "
                      f"{'with' if info.has_audio else 'no'} audio")
-    if vertical:
-        note(info.seconds <= 60, f"vertical, {info.seconds:.1f}s" + ("" if info.seconds <= 60 else
-             " (YouTube Shorts count only videos of 60 seconds or less)"))
+    level = shorts.length_level(info.width, info.height, info.seconds)
+    if level is not None:
+        shape = "vertical" if vertical else "square"
+        text = f"{shape}, {info.seconds:.1f}s ({shorts.eligibility_text(info.seconds)})"
+        if level == "info":
+            rep.lines.append(f"info: {text}")   # a long square video: noted, never a strict-audit failure
+        else:
+            note(level == "ok", text)
+        tip = shorts.editorial_note(info.seconds)
+        if tip:
+            rep.lines.append(f"info: {tip}")   # advice, not a warning: --strict does not fail on it
     if audio is None:
         note(False, "no audio track")
     elif audio.lufs == float("-inf"):
@@ -333,7 +349,7 @@ def load_events(path: Path, allow: list[Path] | None = None) -> list[Event]:
 
 
 def _decode(file: Path) -> np.ndarray:
-    from .render import AUDIO_FORMATS
+    from .ffmpegtools import AUDIO_FORMATS
     done = _run([_ffmpeg(), "-loglevel", "error", "-protocol_whitelist", "file", "-format_whitelist", AUDIO_FORMATS,
                  "-i", str(file), "-t", f"{MAX_FILE_SECONDS:g}", "-f", "f32le", "-ac", "1", "-ar", str(SR), "-"],
                 f"reading {file.name}")
@@ -354,7 +370,9 @@ def render_events(events: list[Event], seconds: float) -> np.ndarray:
         if e.kind:
             sig = synth_effect(e.kind, seed=i)
         else:
-            sig = cache.setdefault(e.file, _decode(e.file))
+            if e.file not in cache:   # decode each recording once, not once per event
+                cache[e.file] = _decode(e.file)
+            sig = cache[e.file]
         _place(out, sig, e.at, e.gain)
     return out
 

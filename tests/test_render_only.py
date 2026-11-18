@@ -56,10 +56,22 @@ class FakePopen:
     def __init__(self, cmd, stdin=None, stderr=None, **kw):
         self.argv = [str(c) for c in cmd]
         self.stdin = _Sink()
+        self.returncode = None
         FakePopen.runs.append(self)
 
-    def wait(self) -> int:
+    def wait(self, timeout=None) -> int:
+        Path(self.argv[-1]).touch()   # "encoded": the output file exists, so the render can publish it
+        self.returncode = 0
         return 0
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = -15
+
+    def kill(self) -> None:
+        self.returncode = -9
 
 
 @pytest.fixture
@@ -285,7 +297,7 @@ GOLDEN_MUSIC_ONLY = [
     *AUDIO_ARGS, "-i", "TMP/music.wav",
     "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p",
     "-af", "atrim=0:4.500,asetpts=PTS-STARTPTS,volume=0.9,afade=t=in:st=0:d=0.8,afade=t=out:st=2.500:d=2.0",
-    "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-movflags", "+faststart", "-t", "4.500", "OUT/landscape/video.mp4"]
+    "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-movflags", "+faststart", "-t", "4.500", "OUT/landscape/STAGING/video.mp4"]
 GOLDEN_MUSIC_AND_VOICE = [
     "FFMPEG", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "540x960", "-r", "12", "-i", "-",
     *AUDIO_ARGS, "-i", "TMP/music.wav", *AUDIO_ARGS, "-i", "TMP/narration.wav",
@@ -293,11 +305,13 @@ GOLDEN_MUSIC_AND_VOICE = [
     "-filter_complex", "[1:a]atrim=0:4.000,asetpts=PTS-STARTPTS,volume=0.9,afade=t=in:st=0:d=0.8,afade=t=out:st=2.000:d=2.0[m];"
                        "[2:a]atrim=0:4.000,asetpts=PTS-STARTPTS[n];[m][n]amix=inputs=2:duration=longest:normalize=0[a]",
     "-map", "0:v", "-map", "[a]", "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-movflags", "+faststart", "-t", "4.000",
-    "OUT/vertical/video.mp4"]
+    "OUT/vertical/STAGING/video.mp4"]
 
 
 def normalised(argv: list[str], out: Path) -> list[str]:
-    return ["FFMPEG" if n == 0 else re.sub(r"\S*/yamlreel-[A-Za-z0-9_]+/", "TMP/", a.replace(str(out), "OUT"))
+    # ffmpeg writes into the render's staging folder (published under the same name once it succeeds)
+    return ["FFMPEG" if n == 0 else re.sub(r"/\.staging-[A-Za-z0-9_]+/", "/STAGING/",
+                                           re.sub(r"\S*/yamlreel-[A-Za-z0-9_]+/", "TMP/", a.replace(str(out), "OUT")))
             for n, a in enumerate(argv)]
 
 

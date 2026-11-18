@@ -86,6 +86,7 @@ def test_the_engine_parses():
     assert subprocess.run([node, "--check", str(path)], capture_output=True).returncode == 0
 
 
+@pytest.mark.browser
 def test_a_real_frame_is_drawn_when_chromium_is_available(tmp_path):
     import os
     pytest.importorskip("playwright")

@@ -509,6 +509,7 @@ def test_pinning_proxy_connects_to_the_address_it_validated(monkeypatch):
         srv.shutdown()
 
 
+@pytest.mark.browser
 def test_capture_of_local_server_works_through_the_proxy(tmp_path):
     pytest.importorskip("playwright")
     from yamlreel.shots import load_shot

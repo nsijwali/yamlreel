@@ -114,6 +114,7 @@ def test_profile_prints_stages_and_scene_types(tmp_path, capsys):
     assert "profile vertical:" not in capsys.readouterr().out
 
 
+@pytest.mark.browser
 def test_the_direct_capture_gives_the_pixels_of_a_standard_screenshot(tmp_path):
     pytest.importorskip("playwright")
     from test_lineart import ctx
@@ -155,6 +156,7 @@ def _browser(tmp_path):
         pytest.skip("no Chromium: set YAMLREEL_CHROMIUM, install Chrome, or run `playwright install chromium`")
 
 
+@pytest.mark.browser
 def test_frames_drawn_ahead_are_the_frames_drawn_on_demand(tmp_path):
     from yamlreel.scenes import build_scene
     c, holder = _browser(tmp_path)
@@ -180,6 +182,7 @@ def test_frames_drawn_ahead_are_the_frames_drawn_on_demand(tmp_path):
         lineart_scene._Page.close_all()
 
 
+@pytest.mark.browser
 def test_frames_asked_for_ahead_and_never_collected_are_dropped(tmp_path):
     from yamlreel.scenes import build_scene
     c, holder = _browser(tmp_path)
@@ -193,6 +196,7 @@ def test_frames_asked_for_ahead_and_never_collected_are_dropped(tmp_path):
         lineart_scene._Page.close_all()
 
 
+@pytest.mark.browser
 def test_an_installed_chrome_is_tried_when_playwrights_own_chromium_is_missing(monkeypatch):
     pytest.importorskip("playwright")
     import asyncio

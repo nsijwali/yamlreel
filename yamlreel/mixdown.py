@@ -23,6 +23,7 @@ from typing import Any
 
 import numpy as np
 
+from . import proclife
 from . import sfx as sfx_mod
 
 SR = 44100
@@ -46,8 +47,11 @@ class Loudness:
     true_peak: float
 
 
-def _run(cmd: list[str], what: str) -> subprocess.CompletedProcess:
-    done = subprocess.run(cmd, capture_output=True)
+def _run(cmd: list[str], what: str, timeout: float | None = None) -> subprocess.CompletedProcess:
+    try:
+        done = proclife.run(cmd, proclife.subprocess_seconds() if timeout is None else timeout, what)
+    except proclife.ProcessTimeout as e:
+        raise MixError(str(e)) from e
     if done.returncode != 0:
         raise MixError(f"ffmpeg failed while {what}: {done.stderr.decode(errors='replace')[-400:]}")
     return done
@@ -74,9 +78,14 @@ def write_wav(path: Path, x: np.ndarray) -> Path:
     return path
 
 
-def measure(ffmpeg: str, path: Path) -> Loudness:
-    err = subprocess.run([ffmpeg, "-hide_banner", "-nostats", "-protocol_whitelist", "file", "-i", str(path),
-                          "-af", "ebur128=peak=true", "-f", "null", "-"], capture_output=True).stderr.decode(errors="replace")
+def measure(ffmpeg: str, path: Path, timeout: float | None = None) -> Loudness:
+    timeout = proclife.subprocess_seconds() if timeout is None else timeout
+    try:
+        err = proclife.run([ffmpeg, "-hide_banner", "-nostats", "-protocol_whitelist", "file", "-i", str(path),
+                            "-af", "ebur128=peak=true", "-f", "null", "-"], timeout, "measuring loudness"
+                           ).stderr.decode(errors="replace")
+    except proclife.ProcessTimeout as e:
+        raise MixError(str(e)) from e
     tail = err.rsplit("Summary:", 1)[-1]
     i = re.search(r"I:\s+(-?(?:inf|[\d.]+)) LUFS", tail)
     p = re.search(r"Peak:\s+(-?(?:inf|[\d.]+)) dBFS", tail)
@@ -103,7 +112,7 @@ def _fit(x: np.ndarray, n: int) -> np.ndarray:
 
 def master(work: Path, ffmpeg: str, total: float, narration: Path | None, music: Path | None,
            cues: list[sfx_mod.Cue], opts: dict[str, Any], music_volume: float, music_level: float,
-           seed: int = 0) -> tuple[Path, dict[str, float]]:
+           seed: int = 0, timeout: float | None = None) -> tuple[Path, dict[str, float]]:
     """The mastered track for `total` seconds, and its numbers (loudness and true peak before and after)."""
     if total > MAX_MIX_SECONDS:
         raise MixError(f"the video is {total:.0f}s; the mix path handles at most {MAX_MIX_SECONDS:g}s (MAX_MIX_SECONDS)")
@@ -116,7 +125,8 @@ def master(work: Path, ffmpeg: str, total: float, narration: Path | None, music:
         if opts.get("voice_chain", True):
             voice_path = work / "voice-chain.wav"
             _run([ffmpeg, "-loglevel", "error", "-y", "-protocol_whitelist", "file", "-i", str(narration),
-                  "-af", VOICE_CHAIN, "-ar", str(SR), "-ac", "1", "-c:a", "pcm_s16le", str(voice_path)], "shaping the voice")
+                  "-af", VOICE_CHAIN, "-ar", str(SR), "-ac", "1", "-c:a", "pcm_s16le", str(voice_path)], "shaping the voice",
+                 timeout)
         mix += _fit(read_wav(voice_path), n)
     if music is not None:
         m = _fit(read_wav(music), n) * np.float32(music_volume * music_level)
@@ -132,7 +142,7 @@ def master(work: Path, ffmpeg: str, total: float, narration: Path | None, music:
     if peak > HEADROOM:          # hot cues or +dB settings: scale down instead of clipping; the loudness gain restores it
         mix *= np.float32(HEADROOM / peak)
     raw = write_wav(work / "mix-raw.wav", mix)
-    before = measure(ffmpeg, raw)
+    before = measure(ffmpeg, raw, timeout)
     if before.true_peak == float("-inf") or before.lufs <= SILENT_LUFS:
         # silence stays silence: no gain (ffmpeg calls it about -70 LUFS, which would ask for +56 dB)
         return raw, {"lufs_before": before.lufs, "tp_before": before.true_peak, "lufs": before.lufs,
@@ -144,8 +154,8 @@ def master(work: Path, ffmpeg: str, total: float, narration: Path | None, music:
     for _ in range(2):    # the limiter takes a little loudness off the peaks: measure and correct once
         _run([ffmpeg, "-loglevel", "error", "-y", "-protocol_whitelist", "file", "-i", str(raw), "-af",
               f"volume={gain:.3f}dB,aresample={SR * 4},alimiter=limit={lim:.5f}:attack=1.5:release=60:level=disabled,"
-              f"aresample={SR}", "-ac", "1", "-c:a", "pcm_s16le", str(out)], "mastering")
-        after = measure(ffmpeg, out)
+              f"aresample={SR}", "-ac", "1", "-c:a", "pcm_s16le", str(out)], "mastering", timeout)
+        after = measure(ffmpeg, out, timeout)
         if abs(after.lufs - target) <= 0.3:
             break
         gain += target - after.lufs

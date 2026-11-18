@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import re
 import shutil
 import sys
@@ -13,14 +14,18 @@ import yaml
 from . import __version__
 from . import music as music_mod
 from . import polish as polish_mod
+from . import profilereport
 from . import story as story_mod
 from . import subtitles as subs_mod
 from . import voice as voice_mod
 from . import voicecheck
 from .config import CONFIG_FILENAME, config_base, Config, ConfigError, load_config, user_config_path
 from .voice import VoiceError, VoiceServer
-from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, only_label, render, share_copy
+from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, make_plan, only_label, render, share_copy
+from . import proclife
+from .proclife import Deadlines
 from .safety import UnsafeInput, resolve_local
+from .signalexit import exit_on_signals
 from .shots import CaptureError
 from .specs import FORMATS, MUSIC_STYLES, SpecError, check_frame_budget, load_spec
 from .theme import FontError, set_font_dirs
@@ -50,7 +55,8 @@ def _runtime(spec: dict, cfg: Config, music_override: str | None = None, no_voic
     if music_override and music_override not in MUSIC_STYLES:
         roots.append(Path(music_override).expanduser().resolve().parent)  # named on the command line: trusted
     voice = VoiceServer(**cfg.voice_server) if cfg.voice_server and not no_voice else None
-    return Runtime(roots=roots, allow_private_hosts=cfg.allow_private_hosts, chromium=cfg.chromium_path, voice=voice)
+    return Runtime(roots=roots, allow_private_hosts=cfg.allow_private_hosts, chromium=cfg.chromium_path, voice=voice,
+                   deadlines=Deadlines.from_config(cfg.timeouts))
 
 
 def _confined_output_dir(spec: dict, cfg: Config) -> Path:
@@ -205,10 +211,16 @@ def cmd_render(args: argparse.Namespace) -> int:
         raise SpecError(f"--contact-frames must be an integer between 1 and {MAX_CONTACT_FRAMES}")
     rt = _runtime(spec, cfg, args.music, no_voice=args.no_voice)
     results = {}
-    for fmt in formats:
-        print(f"rendering {fmt} ...", flush=True)
-        results[fmt] = render(spec, fmt, out_dir, fps=fps, scale=scale, music_override=args.music, contact=True, runtime=rt,
-                               n_formats=len(formats), contact_frames=args.contact_frames, only=only)
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(proclife.subprocess_deadline(rt.deadlines.subprocess))   # voice speed, mastering
+        plan = None   # narration, timing and audio tracks: made once, shared by every format
+        for fmt in formats:
+            print(f"rendering {fmt} ...", flush=True)
+            if plan is None:
+                plan = stack.enter_context(make_plan(spec, fps, out_dir, rt, len(formats), only, args.music))
+            results[fmt] = render(spec, fmt, out_dir, fps=fps, scale=scale, music_override=args.music, contact=True,
+                                  runtime=rt, n_formats=len(formats), contact_frames=args.contact_frames, only=only,
+                                  plan=plan)
     first = next(iter(results.values()))
     text, warns = share_copy(spec, first["full_seconds"], formats)
     if only is None:
@@ -227,6 +239,8 @@ def cmd_render(args: argparse.Namespace) -> int:
     if args.profile:
         for fmt, r in results.items():
             print(_profile_text(fmt, r["profile"], r["seconds"]))
+            print("\n".join(profilereport.resource_lines(r["profile"], rt.deadlines)))
+        print("\n".join(profilereport.version_lines(rt.chromium)))
     if only is None:
         print(f"share copy: {out_dir / 'share-copy.txt'}")
     return 0
@@ -320,8 +334,14 @@ def cmd_music(args: argparse.Namespace) -> int:
     return 0
 
 
+def _subprocess_deadline() -> contextlib.AbstractContextManager[None]:
+    """`timeouts.subprocess` from the configs, for commands that do not otherwise read them (audit, polish)."""
+    return proclife.subprocess_deadline(Deadlines.from_config(load_config().timeouts).subprocess)
+
+
 def cmd_audit(args: argparse.Namespace) -> int:
-    rep = polish_mod.audit_video(Path(args.video).expanduser(), args.target_lufs)
+    with _subprocess_deadline():
+        rep = polish_mod.audit_video(Path(args.video).expanduser(), args.target_lufs)
     print("\n".join(rep.lines))
     return 1 if args.strict and rep.warnings else 0
 
@@ -329,8 +349,9 @@ def cmd_audit(args: argparse.Namespace) -> int:
 def cmd_polish(args: argparse.Namespace) -> int:
     video = Path(args.video).expanduser()
     out = Path(args.out).expanduser() if args.out else video.with_name(f"{video.stem}-polished.mp4")
-    done = polish_mod.polish_video(video, out, Path(args.sfx).expanduser() if args.sfx else None, args.loudness,
-                                   [Path(a) for a in args.allow_path], args.force)
+    with _subprocess_deadline():
+        done = polish_mod.polish_video(video, out, Path(args.sfx).expanduser() if args.sfx else None, args.loudness,
+                                       [Path(a) for a in args.allow_path], args.force)
     print(f"wrote {done}")
     return 0
 
@@ -425,7 +446,8 @@ def main(argv: list[str] | None = None) -> int:
     pl.set_defaults(fn=cmd_polish)
     args = p.parse_args(argv)
     try:
-        return args.fn(args)
+        with exit_on_signals():   # SIGTERM/SIGHUP unwind like Ctrl-C, so the encoder and temporary folders are cleaned up
+            return args.fn(args)
     except (SpecError, ConfigError, RenderError, CaptureError, UnsafeInput, FontError, VoiceError, ValueError) as e:
         print(_error_line(e), file=sys.stderr)
         return 1

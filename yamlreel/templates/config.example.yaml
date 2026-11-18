@@ -56,6 +56,11 @@ limits:                      # capped at 3600 s / 1000 scenes, whatever you set 
 # allow_private_hosts: false             # true to let `shot` capture localhost / LAN URLs
 # chromium_path: /usr/bin/chromium       # browser used for URL captures
 # font_dir: ~/fonts                      # extra fonts folder
+# timeouts:                              # seconds before a stuck program is stopped (generous defaults)
+#   encoder_stall: 300                   # ffmpeg takes no new frame for this long
+#   encoder_finish: 600                  # after the last frame, plus 2 s per second of video
+#   subprocess: 1800                     # one mastering / decoding / polish ffmpeg run
+#   browser_frame: 180                   # one line-art frame, or starting its browser
 
 # --- User config only (~/.config/yamlreel/config.yaml or --voice-url). A spec or project config cannot set these. ---
 # voice_server:
