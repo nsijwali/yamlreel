@@ -646,6 +646,15 @@ class ImageKind(ElementKind):
         scene.paste_with_opacity(canvas, im, (q.ix + off[0], q.iy + off[1]), q.oq)
 
 
+def _resample_box(src: Image.Image, size: tuple[int, int], box: tuple[float, float, float, float]) -> Image.Image:
+    """`src.resize(size, LANCZOS, box=box)` with the two passes in a fixed order (across, then down). Left to itself
+    Pillow picks the order from the shapes, and the 8-bit intermediate clamps the filter's overshoot differently in
+    each order, so a window of a mask and the whole mask would disagree by up to about 10% at glyph edges."""
+    w, h = size
+    across = src.resize((w, src.height), Image.LANCZOS, box=(box[0], 0, box[2], src.height))
+    return across.resize((w, h), Image.LANCZOS, box=(0, box[1], w, box[3]))
+
+
 def _rounded_mask(size: tuple[int, int], radius: float, window: tuple[int, int, int, int] | None = None) -> Image.Image:
     """An antialiased rounded-rectangle mask of a `size` image (drawn at 2x and reduced). With `window` (x0, y0, x1, y1
     inside that image) only that part is made."""
@@ -998,7 +1007,7 @@ class MotionScene(Scene):
             else:
                 sw, sh = src.size
                 box = (rel[0] * sw / tw, rel[1] * sh / th, rel[2] * sw / tw, rel[3] * sh / th)
-                mask = src.resize((rel[2] - rel[0], rel[3] - rel[1]), Image.LANCZOS, box=box)
+                mask = _resample_box(src, (rel[2] - rel[0], rel[3] - rel[1]), box)
             self._note_layer(mask.width, mask.height)
             self._lru.put(key, mask, mask.width * mask.height)
             return mask, (vis[0], vis[1])
@@ -1008,36 +1017,26 @@ class MotionScene(Scene):
         hx, hy = _rot_extents(tw / 2, eh / 2, q.rotate)
         if q.ix + hx <= -m or q.ix - hx >= W + m or q.iy + hy <= -m or q.iy - hy >= H + m:
             return None
+        # One path for every turned text: an affine sample of the source mask over the window the frame shows, kept
+        # relative to the anchor, so a text that is cut by the frame edge draws the same pixels as when it is whole
+        # (the earlier whole-mask path resized, rotated with expand and truncated its paste: up to 3 px off).
         src = self._typed(leaf, q.dq) if typed else self._hi(leaf)
-        if (2 * hx) * (2 * hy) <= MAX_HI_MASK_PIXELS:
-            key = ("mask", leaf.node.index, q.sq, q.rq, q.dq if typed else -1, None)
-            hit = self._lru.get(key)
-            if hit is _MISS:
-                mask = src if src.size == (tw, th) else src.resize((tw, th), Image.LANCZOS)
-                ext = Image.new("L", (tw, eh), 0)
-                ext.paste(mask, (0, th - bh))
-                hit = ext.rotate(-q.rotate, Image.BICUBIC, expand=True)
-                self._note_layer(hit.width, hit.height)
-                self._lru.put(key, hit, hit.width * hit.height)
-            return hit, (int(q.ix - hit.width / 2), int(q.iy - hit.height / 2))
-        # too large to build whole: sample only the window the frame shows, straight from the source mask
-        import math as _m
-        win = (max(int(_m.floor(q.ix - hx)), -m), max(int(_m.floor(q.iy - hy)), -m),
-               min(int(_m.ceil(q.ix + hx)), W + m), min(int(_m.ceil(q.iy + hy)), H + m))
-        key = ("maskw", leaf.node.index, q.sq, q.rq, q.dq if typed else -1, q.ix, q.iy, win)
+        rel = (max(math.floor(-hx), -m - q.ix), max(math.floor(-hy), -m - q.iy),
+               min(math.ceil(hx), W + m - q.ix), min(math.ceil(hy), H + m - q.iy))
+        key = ("maskw", leaf.node.index, q.sq, q.rq, q.dq if typed else -1, rel)
         hit = self._lru.get(key)
         if hit is _MISS:
             sw, sh = src.size
-            a = _m.radians(q.rotate)
-            c, sn = _m.cos(a), _m.sin(a)
+            a = math.radians(q.rotate)
+            c, sn = math.cos(a), math.sin(a)
             kx, ky = sw / tw, sh / th
-            x0, y0 = win[0] + 0.5 - q.ix, win[1] + 0.5 - q.iy
+            x0, y0 = rel[0], rel[1]           # Pillow samples output pixel centres itself (no extra +0.5)
             data = (kx * c, kx * sn, kx * (c * x0 + sn * y0 + tw / 2),
                     -ky * sn, ky * c, ky * (-sn * x0 + c * y0 + eh / 2 - (th - bh)))
-            hit = src.transform((win[2] - win[0], win[3] - win[1]), Image.AFFINE, data, Image.BICUBIC)
+            hit = src.transform((rel[2] - rel[0], rel[3] - rel[1]), Image.AFFINE, data, Image.BICUBIC)
             self._note_layer(hit.width, hit.height)
             self._lru.put(key, hit, hit.width * hit.height)
-        return hit, (win[0], win[1])
+        return hit, (q.ix + rel[0], q.iy + rel[1])
 
     # -- sprites ------------------------------------------------------------------------------------------
 

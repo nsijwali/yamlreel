@@ -6,6 +6,7 @@ import random
 import sys
 from typing import Any
 
+import numpy as np
 import pytest
 from PIL import Image, ImageChops, ImageDraw
 
@@ -454,22 +455,28 @@ def test_the_lru_refuses_one_entry_bigger_than_its_budget():
     assert lru.bytes <= 1000 and lru.get("a") is motion._MISS
 
 
-def test_a_clipped_text_mask_matches_the_whole_mask_where_they_overlap(tmp_path):
-    sc, ctx = make(tmp_path, {"kind": "text", "text": "Clipped", "size": 60, "scale": 2, "enter": "none", "at": 0},
+@pytest.mark.parametrize("text, size, scale", [("Clipped", 60, 2), ("xylophone", 48, 2), ("Hello 429", 37, 2.3),
+                                              ("Rate limit", 71, 1.5)])
+def test_a_clipped_text_mask_matches_the_whole_mask_where_they_overlap(tmp_path, text, size, scale):
+    """A text cut by the frame edge must draw the same pixels as the whole text. The resample runs its two passes in a
+    fixed order (`_resample_box`); left to Pillow, a window could take the other order and differ by up to 26/255 at
+    glyph edges (seen on Linux CI with Debian's DejaVu, and locally with "xylophone"). One level is allowed: the window
+    starts at a fractional source position, so the fixed-point filter weights can round one step apart."""
+    sc, ctx = make(tmp_path, {"kind": "text", "text": text, "size": size, "scale": scale, "enter": "none", "at": 0},
                    W=540, H=960)
     leaf = next(iter(sc.leaves.values()))
     q = sc._plan(1.0)[0].q
     full, (fx, fy) = sc.text_mask(leaf, q, False)
     assert full.width < 540                                    # it fits: this is the whole mask
-    shifted = motion.replace(q, ix=30)                         # half of it hangs off the left edge
+    shifted = motion.replace(q, ix=30)                         # part of it hangs off the left edge
     part, (px, py) = sc.text_mask(leaf, shifted, False)
     assert px == -16 and part.width < full.width
     # the same pixels at another x: compare the overlap away from the window edge
     ox = int(30 - round(leaf.prep.blk.width * q.scale) / 2)
     x0 = px + 4
-    a = part.crop((x0 - px, 0, part.width, part.height))
-    b = full.crop((x0 - ox, 0, part.width + px - ox, part.height))
-    assert a.size == b.size and ImageChops.difference(a, b).getbbox() is None
+    a = np.asarray(part.crop((x0 - px, 0, part.width, part.height)), dtype=int)
+    b = np.asarray(full.crop((x0 - ox, 0, part.width + px - ox, part.height)), dtype=int)
+    assert a.shape == b.shape and np.abs(a - b).max() <= 1
 
 
 def test_text_that_misses_the_frame_makes_no_mask_and_no_layer(tmp_path):
@@ -490,24 +497,34 @@ def test_a_huge_composed_scale_draws_only_the_window_the_frame_shows(tmp_path, r
     assert sc.max_layer_pixels() <= motion.MAX_LAYER_PIXELS and sc.retained_bytes() <= motion.MOTION_CACHE_BYTES + 270 * 480 * 3
 
 
-def test_the_windowed_turned_text_agrees_with_the_whole_turned_mask(tmp_path, monkeypatch):
-    el = {"kind": "text", "text": "Turn", "size": 100, "scale": 2, "rotate": 25, "enter": "none", "at": 0}
-    whole, ctx = make(tmp_path, el, W=270, H=480)
-    ref = whole.frame(1.0)
-    monkeypatch.setattr(motion, "MAX_HI_MASK_PIXELS", 1_000)           # the window path for the same text
-    windowed, _ = make(tmp_path, el, W=270, H=480)
-    got = windowed.frame(1.0)
-    bg = ctx.background()
-    a, b = ImageChops.difference(ref, bg).getbbox(), ImageChops.difference(got, bg).getbbox()
-    assert a and b and all(abs(x - y) <= 2 for x, y in zip(a, b))
-    def ink_and_centre(img):
-        m = ImageChops.difference(img, bg).convert("L")
-        data = m.tobytes()
-        total = sum(data)
-        return (total, sum((i % m.width) * v for i, v in enumerate(data)) / total,
-                sum((i // m.width) * v for i, v in enumerate(data)) / total)
-    (ia, xa, ya), (ib, xb, yb) = ink_and_centre(ref), ink_and_centre(got)
-    assert abs(ia - ib) < 0.08 * ia and abs(xa - xb) < 2.0 and abs(ya - yb) < 2.0   # the whole-mask path rounds its paste to a pixel
+@pytest.mark.parametrize("text, size, rotate", [("Turn", 100, 25), ("Hi 429", 80, 25), ("Wq", 60, -40)])
+def test_turned_text_cut_by_the_frame_matches_the_whole_turned_text(tmp_path, text, size, rotate):
+    """Turned text has one drawing path (an affine sample of the window the frame shows, relative to the anchor), so the
+    part of a text hanging off the frame draws the same pixels as the whole text. The old whole-mask path (resize,
+    rotate with expand, truncated paste) was up to 3 px away from the windowed one."""
+    sc, ctx = make(tmp_path, {"kind": "text", "text": text, "size": size, "scale": 2, "rotate": rotate, "enter": "none",
+                              "at": 0}, W=540, H=960)
+    leaf = next(iter(sc.leaves.values()))
+    q = sc._plan(1.0)[0].q
+    full, (fx, fy) = sc.text_mask(leaf, q, False)
+    part, (px, py) = sc.text_mask(leaf, motion.replace(q, ix=40), False)
+    assert px == -16 and part.width < full.width
+    dx = 40 - q.ix
+    lo, hi = max(px, fx + dx) + 2, min(px + part.width, fx + dx + full.width)
+    a = np.asarray(part, dtype=int)[:, lo - px:hi - px]
+    b = np.asarray(full, dtype=int)[py - fy:py - fy + part.height, lo - fx - dx:hi - fx - dx]
+    assert a.shape == b.shape and a.sum() > 0 and np.abs(a - b).max() <= 1
+
+
+def test_a_tiny_turn_lands_where_the_unturned_text_is(tmp_path):
+    """The turned path and the plain path share their pixel-centre convention: a 0.05 degree turn moves the ink by
+    well under a pixel (it was half a pixel up and left before)."""
+    def ink_centre(rotate):
+        sc, ctx = make(tmp_path, {"kind": "text", "text": "Turn", "size": 80, "scale": 2, "rotate": rotate, "enter": "none",
+                                  "at": 0}, W=540, H=960)
+        m = np.abs(np.asarray(sc.frame(1.0).convert("L"), float) - np.asarray(ctx.background().convert("L"), float))
+        return np.array([(m.sum(0) * np.arange(m.shape[1])).sum(), (m.sum(1) * np.arange(m.shape[0])).sum()]) / m.sum()
+    assert np.abs(ink_centre(0.05) - ink_centre(0)).max() < 0.25
 
 
 def test_every_raster_allocation_is_recorded(tmp_path):
