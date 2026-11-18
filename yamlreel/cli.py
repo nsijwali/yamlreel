@@ -24,6 +24,7 @@ from .voice import VoiceError, VoiceServer
 from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, make_plan, only_label, render, share_copy
 from .proclife import Deadlines
 from .safety import UnsafeInput, resolve_local
+from .signalexit import exit_on_signals
 from .shots import CaptureError
 from .specs import FORMATS, MUSIC_STYLES, SpecError, check_frame_budget, load_spec
 from .theme import FontError, set_font_dirs
@@ -436,7 +437,8 @@ def main(argv: list[str] | None = None) -> int:
     pl.set_defaults(fn=cmd_polish)
     args = p.parse_args(argv)
     try:
-        return args.fn(args)
+        with exit_on_signals():   # SIGTERM/SIGHUP unwind like Ctrl-C, so the encoder and temporary folders are cleaned up
+            return args.fn(args)
     except (SpecError, ConfigError, RenderError, CaptureError, UnsafeInput, FontError, VoiceError, ValueError) as e:
         print(_error_line(e), file=sys.stderr)
         return 1

@@ -18,6 +18,8 @@ import tempfile
 from pathlib import Path
 from types import TracebackType
 
+from . import stalestaging
+
 STAGING_PREFIX = ".staging-"
 
 
@@ -29,7 +31,9 @@ class Staging:
     def __init__(self, dest: Path):
         self.dest = dest
         dest.mkdir(parents=True, exist_ok=True)
+        stalestaging.sweep(dest, STAGING_PREFIX)   # left by a render that was killed outright
         self.dir = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=dest))
+        stalestaging.mark(self.dir)
         self._names: list[str] = []
         self._stale: list[str] = []
         self._done = False
