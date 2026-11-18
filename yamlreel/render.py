@@ -17,6 +17,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from . import music as music_mod
+from . import shorts as shorts_mod
 from . import subtitles as subs_mod
 from . import voice as voice_mod
 from .badge import Badge, make_badge, step_plan
@@ -27,6 +28,7 @@ from .shots import CaptureError
 from .specs import FORMATS, SpecError, check_frame_budget
 from .textkit import blit, ease, ease_out, make_block
 from .theme import font
+from .watermark_fit import WatermarkSizeError, fit_watermark
 
 FADE_IN = 0.25  # the default transition length, seconds (config.DEFAULTS["transition"])
 SLIDE_EASING = "in_out"
@@ -36,7 +38,7 @@ MAX_CONTACT_FRAMES = 8
 CONTACT_COLS = 4  # tiles across a default sheet
 YT_TITLE_MAX = 100
 YT_DESC_MAX = 5000
-SHORTS_MAX_SECONDS = 180
+SHORTS_MAX_SECONDS = shorts_mod.SHORTS_MAX_SECONDS  # the one rule lives in shorts.py
 FRAMES_AHEAD = 3  # scenes are told this many frames early that a frame is coming (Scene.prefetch)
 FRAME_QUEUE = 4  # frames waiting for ffmpeg at most (about 25 MB at 1080x1920)
 MAX_WATERMARK_PIXELS = 16_000_000  # a watermark image larger than this is refused
@@ -153,7 +155,9 @@ class Timeline:
         made: dict[tuple[int, int, str], Badge] = {}
         for i, plan in enumerate(step_plan([s.get("step") for s in scenes_spec])):
             if plan is not None:
-                self._badges[i] = made.setdefault(plan, make_badge(self.ctx, *plan))
+                if plan not in made:   # one badge image per distinct step, built only once
+                    made[plan] = make_badge(self.ctx, *plan)
+                self._badges[i] = made[plan]
         if self._badges and self._wm:
             rgb, _, (wx, wy) = self._wm
             bx0, by0, bx1, by1 = next(iter(self._badges.values())).box
@@ -188,11 +192,13 @@ class Timeline:
                     if im.width * im.height > MAX_WATERMARK_PIXELS:
                         raise RenderError(f"watermark image is {im.width}x{im.height}; the limit is "
                                           f"{MAX_WATERMARK_PIXELS} pixels (MAX_WATERMARK_PIXELS)")
+                    size = fit_watermark(im.width, im.height, int(wm.get("size", 56) * u), c.W)  # before any decode
                     logo = im.convert("RGBA")
+            except WatermarkSizeError as e:
+                raise RenderError(str(e)) from e
             except OSError as e:
                 raise RenderError(f"cannot read watermark image: {e}") from e
-            h = int(wm.get("size", 56) * u)
-            logo = logo.resize((max(1, int(logo.width * h / logo.height)), h), Image.LANCZOS)
+            logo = logo.resize(size, Image.LANCZOS)
             rgb, mask = logo.convert("RGB"), logo.getchannel("A")
         else:
             blk = make_block(str(wm["text"]), c.body, wm.get("size", 30) * u * (1.1 if c.vertical else 1.0),
@@ -474,7 +480,8 @@ def share_copy(spec: dict[str, Any], total: float, fmt_list: list[str]) -> tuple
     if len(title) > YT_TITLE_MAX:
         warns.append(f"title is {len(title)} chars; YouTube allows {YT_TITLE_MAX}")
     tags = [str(t).lstrip("#") for t in meta.get("tags", [])]
-    if "vertical" in fmt_list and total <= 60 and "Shorts" not in tags:
+    short_forms = [FORMATS[f] for f in fmt_list if f in FORMATS and shorts_mod.short_form(*FORMATS[f])]
+    if any(shorts_mod.shorts_eligible(w, h, total) for w, h in short_forms) and "Shorts" not in tags:
         tags = ["Shorts", *tags]
     lines = [str(meta.get("description", "")).strip()]
     question = next((str(sc["question"]).strip() for sc in spec.get("scenes", []) if sc.get("type") == "cta"
@@ -490,7 +497,7 @@ def share_copy(spec: dict[str, Any], total: float, fmt_list: list[str]) -> tuple
     if len(desc) > YT_DESC_MAX:
         warns.append(f"description is {len(desc)} chars; YouTube allows {YT_DESC_MAX}")
     if "vertical" in fmt_list and total > SHORTS_MAX_SECONDS:
-        warns.append(f"vertical video is {total:.0f}s; YouTube Shorts allow up to {SHORTS_MAX_SECONDS}s, "
+        warns.append(f"vertical video is {total:.0f}s; YouTube Shorts allow up to {SHORTS_MAX_SECONDS:g}s, "
                      "beyond that it is a normal video")
     return f"Title: {title}\n\nDescription:\n{desc}\n", warns
 

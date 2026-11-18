@@ -21,6 +21,8 @@ from typing import Any
 import numpy as np
 import yaml
 
+from . import shorts
+
 SR = 44100
 MAX_EVENTS = 500
 MAX_FILE_SECONDS = 30.0
@@ -159,9 +161,13 @@ def audit_video(video: Path, target_lufs: float = TARGET_LUFS) -> Report:
     fps = f", {info.fps:g} fps" if info.fps else ""
     rep.lines.append(f"info: {info.width}x{info.height}{fps}, {info.seconds:.1f}s, "
                      f"{'with' if info.has_audio else 'no'} audio")
-    if vertical:
-        note(info.seconds <= 60, f"vertical, {info.seconds:.1f}s" + ("" if info.seconds <= 60 else
-             " (YouTube Shorts count only videos of 60 seconds or less)"))
+    if vertical or info.width == info.height:
+        shape = "vertical" if vertical else "square"
+        eligible = shorts.shorts_eligible(info.width, info.height, info.seconds)
+        note(eligible, f"{shape}, {info.seconds:.1f}s ({shorts.eligibility_text(info.seconds)})")
+        tip = shorts.editorial_note(info.seconds)
+        if tip:
+            rep.lines.append(f"info: {tip}")   # advice, not a warning: --strict does not fail on it
     if audio is None:
         note(False, "no audio track")
     elif audio.lufs == float("-inf"):
@@ -354,7 +360,9 @@ def render_events(events: list[Event], seconds: float) -> np.ndarray:
         if e.kind:
             sig = synth_effect(e.kind, seed=i)
         else:
-            sig = cache.setdefault(e.file, _decode(e.file))
+            if e.file not in cache:   # decode each recording once, not once per event
+                cache[e.file] = _decode(e.file)
+            sig = cache[e.file]
         _place(out, sig, e.at, e.gain)
     return out
 

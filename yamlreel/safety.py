@@ -202,6 +202,18 @@ def _is_ip_literal(name: str) -> bool:
     return True
 
 
+_UNSPECIFIED_V4 = ipaddress.IPv4Address("0.0.0.0")
+_UNSPECIFIED_V6 = ipaddress.IPv6Address("::")
+
+
+def _unspecified(ip: ipaddress._BaseAddress) -> bool:
+    """0.0.0.0, :: or the mapped ::ffff:0.0.0.0, decided here rather than by `is_unspecified`, whose answer for the
+    mapped form differs between Python patch releases. Only for the DNS-blocker check: refusals use `classify`."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped == _UNSPECIFIED_V4
+    return ip == _UNSPECIFIED_V4 or ip == _UNSPECIFIED_V6
+
+
 def pinned_ips(host: str, allow_private: bool) -> list[str]:
     """Resolve `host` once, validate every address, and return the addresses that may be connected to.
 
@@ -216,7 +228,7 @@ def pinned_ips(host: str, allow_private: bool) -> list[str]:
     ips = _ips_for(name)
     if not ips:
         raise Unresolvable(f"cannot resolve host: {host}")
-    if not _is_ip_literal(name) and all(ip.is_unspecified for ip in ips):
+    if not _is_ip_literal(name) and all(_unspecified(ip) for ip in ips):
         # DNS ad/tracker blockers (Pi-hole, NextDNS) answer 0.0.0.0 or ::. Still refused and never connected to,
         # but a blocked name is not a policy decision about the page.
         raise Unresolvable(f"host is blocked by DNS (resolves to {_fmt(ips[0])}): {host}")

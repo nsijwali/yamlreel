@@ -69,13 +69,17 @@ def test_audit_warns_without_audio_and_cli_strict_exit_code(clips, capsys):
     assert "loop:" in capsys.readouterr().out
 
 
-def test_audit_flags_a_long_vertical_video(monkeypatch):
+def test_audit_accepts_a_75s_vertical_video_as_a_short_with_a_tip_not_a_warning(monkeypatch):
+    # Shorts accept square and vertical videos up to 180 s (render uses the same rule): 75 s is eligible, and the
+    # 60 s length advice is an info line, so a strict audit does not fail on length alone.
     long = polish.Probe(75.0, 1080, 1920, 30.0, True)
     monkeypatch.setattr(polish, "probe", lambda v: long)
     monkeypatch.setattr(polish, "measure_audio", lambda v: polish.Audio(-14.0, 3.0, -2.0))
     monkeypatch.setattr(polish, "measure_loop", lambda v: polish.Loop(0.0, 0.01))
     rep = polish.audit_video(Path("x.mp4"))
-    assert any("60 seconds" in line and line.startswith("warn") for line in rep.lines)
+    assert rep.warnings == 0
+    assert any(line.startswith("ok") and "vertical, 75.0s" in line for line in rep.lines)
+    assert any(line.startswith("info: tip") and "60s" in line for line in rep.lines)
 
 
 # --- effects ---------------------------------------------------------------------------------------------

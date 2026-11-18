@@ -13,7 +13,7 @@ from typing import Any, Callable, Iterable
 
 import yaml
 
-from . import shots
+from . import errorfmt, shots
 from .config import (DEFAULTS, HARD_LIMITS, SHARED_KEYS, Config, _absolutize, clamp_limits, describe_key,
                      describe_value, merge, normalize_music)
 from .config import yaml_problem as _yaml_problem
@@ -104,13 +104,12 @@ def suggest(key: str, allowed: Iterable[str]) -> str | None:
 def _unknown_key(path: str, key: object, allowed: Iterable[str], what: str, exc: type[Exception] = SpecError,
                  problem: str = "unknown field", note: str = "") -> Exception:
     """The error for a key that `what` does not have. `path` is the mapping that holds the key."""
-    name = describe_key(key)
-    full = f"{path}.{name}" if path else name
-    msg = f"{full}: {problem} for {what}; allowed: {', '.join(sorted(allowed))}"
-    if note:
-        msg += f" ({note})"
-    hint = suggest(key, allowed) if isinstance(key, str) else None
-    return exc(f"{msg} ({hint})" if hint else msg)
+    return errorfmt.unknown_key(path, key, allowed, what, exc, problem, note)
+
+
+# Every unknown-key error (config, limits, voice_server and theme ones too) gets its hint from `suggest`, looked up
+# at call time so that replacing specs.suggest replaces the hint everywhere.
+errorfmt.set_hint(lambda key, allowed: suggest(key, allowed))
 
 
 def _no_unknown(path: str, raw: dict[Any, Any], allowed: Iterable[str], what: str) -> None:
