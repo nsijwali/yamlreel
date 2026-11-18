@@ -93,3 +93,17 @@ aliases are preserved. Example renders must hash identically before and after (f
   job installs the newest compatible dependencies; every job records versions. A test checks that the constraints
   file pins every runtime dependency and satisfies pyproject's ranges.
 - Full suite at the end of S6, example hashes compared.
+
+### S7 review follow-up (reviewer findings on PR #55)
+- CI: the matrix job keeps the id and default name `test`, so its checks stay `test (3.10)` and `test (3.12)`.
+- `shorts.length_level`: one length rule for audit and share copy; a square video past 180 s is an `info:` line, only
+  a vertical one warns (audit --strict never fails on a long square video).
+- Item 4 completed: `yamlreel/motion_assets.py` (new) decodes and pre-scales motion images on demand through
+  `MediaBudget.charge()`; `MotionScene.release()` gives them back; the whole-render pin and its error are removed.
+  Frames hash the same as main for motion-demo, motion-s1-demo, motion-s2-demo and a motion-image fixture (full,
+  `--only`, transitions, camera, poster, contact). Peak RSS measured for 2/8/16 motion-image scenes; test added.
+- `yamlreel/signalexit.py` (new): the CLI turns SIGTERM/SIGHUP into an exception (exit 128 + signal) so every cleanup
+  runs; `yamlreel/stalestaging.py` (new): Staging records its owner and removes staging folders of dead owners or
+  older than a day. Tested by signalling a real render subprocess with a slow fake encoder.
+- `proclife.subprocess_deadline`: `timeouts.subprocess` reaches polish, mixdown defaults and voiceover.speed (now via
+  `proclife.run`). Shot images are fully decoded once at build time, so truncated data names its scene early.
