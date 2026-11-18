@@ -17,6 +17,7 @@ Pipeline steps (script, voice, render, deliver) are in `shorts/templates/README.
 | [card-stack](card-stack/rules.md) | a list or option set revealed one card at a time |
 | [number-chain](number-chain/rules.md) | a back-of-envelope result derived on screen, or a 1 : 100 comparison drawn to scale |
 | [ending-card](ending-card/rules.md) | the series ending: next part, follow and subscribe, channel name last |
+| [lyric-breath](lyric-breath/rules.md) | a sung line with transliteration and translation, fading like a breath (`dusk` theme) |
 
 Failures we already hit, one line each with the fix: [failures.md](failures.md).
 

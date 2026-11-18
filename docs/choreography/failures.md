@@ -24,3 +24,6 @@
 - "read-heavy" was spoken as "red heavy": reword homographs ("heavy on reads"); the retake check catches it.
 - A frame-check sheet for a landscape spec drew vertical guides and rendered as vertical: framecheck now takes the spec's format.
 - voicedeliver key lines and beat numbers were hard-coded for one Short: use a `<spec>.delivery.json` sidecar.
+- Devanagari drawn by a `text` element came out unshaped (conjuncts split, the i-matra after its consonant): Pillow without raqm cannot shape it. Pre-shape the line to a PNG (CoreText, HarfBuzz) and place it as an `image` at its pixel size.
+- A lyric line half-faded at a scene's last frame ghosted through the next scene's fade transition: end every exit at least 0.2 s before the scene ends.
+- A full-frame plate faded over the theme gradient left a lit indigo frame instead of black: put an opaque black image under it.
