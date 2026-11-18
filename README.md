@@ -421,6 +421,8 @@ scenes: [...]                 # every scene also takes: step (badge label), tran
 
 ## Motion scenes
 
+Building a Short? Follow the [choreography guide](docs/choreography/README.md): one rules page per move, with tested snippets.
+
 `type: motion` draws a list of `elements` with Pillow only: no Chrome, and 2 to 4 ms per 1080x1920 frame on a typical beat (an unchanged frame is a copy). Kinds are `text`, `rect`, `circle`, `group`, `arrow`, `path` and `image`, and a scene can have a `camera`.
 
 ```yaml
