@@ -22,6 +22,7 @@ class Ctx:
     allow_private_hosts: bool = False
     chromium: str | None = None
     warnings: list[str] = field(default_factory=list)
+    browser_timeout: float = 180.0   # seconds a browser may take per frame (render: Runtime.deadlines.browser_frame)
     _bg: Image.Image | None = None
 
     def __post_init__(self) -> None:

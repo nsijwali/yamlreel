@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 import math
-import queue
 import re
 import shutil
 import subprocess
 import tempfile
-import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,10 +15,12 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from . import music as music_mod
+from . import proclife
 from . import shorts as shorts_mod
 from . import subtitles as subs_mod
 from . import voice as voice_mod
 from .badge import Badge, make_badge, step_plan
+from .browserlife import closing_browsers
 from .config import HARD_LIMITS
 from .publish import PublishError, Staging
 from .safety import UnsafeInput, resolve_local
@@ -41,7 +41,7 @@ YT_TITLE_MAX = 100
 YT_DESC_MAX = 5000
 SHORTS_MAX_SECONDS = shorts_mod.SHORTS_MAX_SECONDS  # the one rule lives in shorts.py
 FRAMES_AHEAD = 3  # scenes are told this many frames early that a frame is coming (Scene.prefetch)
-FRAME_QUEUE = 4  # frames waiting for ffmpeg at most (about 25 MB at 1080x1920)
+FRAME_QUEUE = proclife.FRAME_QUEUE  # frames waiting for ffmpeg at most (about 25 MB at 1080x1920)
 MAX_WATERMARK_PIXELS = 16_000_000  # a watermark image larger than this is refused
 
 
@@ -56,6 +56,7 @@ class Runtime:
     allow_private_hosts: bool = False
     chromium: str | None = None
     voice: "voice_mod.VoiceServer | None" = None  # where narration is synthesised (trusted setting)
+    deadlines: proclife.Deadlines = field(default_factory=proclife.Deadlines)  # `timeouts:` (trusted setting)
 
     @classmethod
     def for_spec(cls, spec: dict[str, Any]) -> "Runtime":
@@ -100,7 +101,8 @@ class Timeline:
         rt = runtime or Runtime.for_spec(spec)
         self.rt = rt
         self.ctx = Ctx(W, H, spec["_theme_obj"], workdir, Path(spec.get("_dir", ".")), roots=list(rt.roots),
-                       allow_private_hosts=rt.allow_private_hosts, chromium=rt.chromium)
+                       allow_private_hosts=rt.allow_private_hosts, chromium=rt.chromium,
+                       browser_timeout=rt.deadlines.browser_frame)
         scenes_spec = [dict(s) for s in spec["scenes"]]
         for s, seconds in zip(scenes_spec, durations if durations is not None else plan_durations(spec)):
             s["seconds"] = seconds
@@ -544,7 +546,8 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
     out = out_dir / fmt
     out.mkdir(parents=True, exist_ok=True)
     # Outputs are written into a staging folder and replace the previous ones only once everything succeeded.
-    with tempfile.TemporaryDirectory(prefix="yamlreel-") as td, Staging(out) as stage:
+    # The browser that draws line-art frames is closed when this render ends, however it ends (closing_browsers).
+    with tempfile.TemporaryDirectory(prefix="yamlreel-") as td, Staging(out) as stage, closing_browsers():
         work = Path(td)
         cache = out_dir / ".cache"
         cache.mkdir(parents=True, exist_ok=True)
@@ -613,7 +616,7 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
             try:
                 audio, mix_numbers = mixdown.master(work, ffmpeg, total, narration, audio, cues,
                                                     spec["mix"], float(spec["music"].get("volume", 0.9)), level,
-                                                    int(spec["music"].get("seed", 0) or 0))
+                                                    int(spec["music"].get("seed", 0) or 0), timeout=rt.deadlines.subprocess)
             except mixdown.MixError as e:
                 raise RenderError(f"mix: {e}") from e
             narration = None
@@ -673,54 +676,39 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         cmd += ["-movflags", "+faststart", "-t", f"{out_seconds:.3f}", str(stage.path(video.name))]
         errlog = open(work / "ffmpeg.log", "wb")
         try:
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=errlog)
+            # Frames go to ffmpeg from a second thread, so the next frame is drawn while this one is being read by the
+            # encoder. FramePipe owns the encoder, that thread and the short queue between them: every wait has a
+            # deadline, and an error or an interruption stops the encoder before anything waits for it.
+            pipe = proclife.FramePipe(cmd, errlog, rt.deadlines, out_seconds)
         except OSError as e:
             errlog.close()
             raise RenderError(f"cannot run ffmpeg at {ffmpeg}: {e}") from e
         t_frames = clock()
         t_draw = t_pipe = 0.0
-        # Frames go to ffmpeg from a second thread, so the next frame is drawn while this one is being read by the
-        # encoder. The queue is short: it holds a few frames at most, in order, and blocks the drawing when full.
-        pending: queue.Queue[bytes | None] = queue.Queue(maxsize=FRAME_QUEUE)
-        broken = threading.Event()   # ffmpeg stopped reading (it exited early); its log says why
-
-        def feed() -> None:
-            while (data := pending.get()) is not None:
-                if not broken.is_set():
-                    try:
-                        proc.stdin.write(data)
-                    except Exception:   # keep draining so the drawing side never blocks on a full queue
-                        broken.set()
-            try:
-                proc.stdin.close()
-            except OSError:
-                pass
-
-        feeder = threading.Thread(target=feed, name="yamlreel-frames", daemon=True)
-        feeder.start()
         try:
-            for (n0, n1), (a, _) in zip(frame_runs, spans or [(0.0, total)]):
-                for n in range(n0, n1):
-                    if broken.is_set():
-                        break
-                    t0 = clock()
-                    for m in (range(n + 1, n + FRAMES_AHEAD + 1) if n == n0 else (n + FRAMES_AHEAD,)):
-                        if m < n1:
-                            tl.prefetch(max(m / fps, a))
-                    # the poster doubles as frame 0 (thumbnail); a slice has no poster
-                    img = poster if n == 0 and only is None else tl.frame_at(max(n / fps, a))
-                    t1 = clock()
-                    # The bytes are copied out here, on the drawing thread: a scene may reuse its canvas for the next
-                    # frame. Converting an RGB frame to RGB only copies it: skip that.
-                    pending.put((img if img.mode == "RGB" else img.convert("RGB")).tobytes())
-                    t_draw += t1 - t0
-                    t_pipe += clock() - t1
-        finally:   # also on an error while drawing: let ffmpeg finish and exit instead of leaving it waiting
-            pending.put(None)
-            feeder.join()
-        rc = proc.wait()
+            with pipe:
+                for (n0, n1), (a, _) in zip(frame_runs, spans or [(0.0, total)]):
+                    for n in range(n0, n1):
+                        if pipe.broken:
+                            break
+                        t0 = clock()
+                        for m in (range(n + 1, n + FRAMES_AHEAD + 1) if n == n0 else (n + FRAMES_AHEAD,)):
+                            if m < n1:
+                                tl.prefetch(max(m / fps, a))
+                        # the poster doubles as frame 0 (thumbnail); a slice has no poster
+                        img = poster if n == 0 and only is None else tl.frame_at(max(n / fps, a))
+                        t1 = clock()
+                        # The bytes are copied out here, on the drawing thread: a scene may reuse its canvas for the
+                        # next frame. Converting an RGB frame to RGB only copies it: skip that.
+                        pipe.put((img if img.mode == "RGB" else img.convert("RGB")).tobytes())
+                        t_draw += t1 - t0
+                        t_pipe += clock() - t1
+                rc = pipe.finish()
+        except proclife.ProcessTimeout as e:
+            raise RenderError(str(e)) from e
+        finally:
+            errlog.close()
         t_encoded = clock()
-        errlog.close()
         if rc != 0:
             raise RenderError("ffmpeg failed:\n" + (work / "ffmpeg.log").read_text(errors="replace")[-1500:])
         sheet = None
@@ -733,8 +721,6 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
             raise RenderError(str(e)) from e
         if srt is not None:
             srt = stage.final(srt_name)
-    from .lineart_scene import _Page
-    _Page.close_all()   # free Chromium (and let a later format capture a `shot`) before the next format starts
     t_end = clock()
     profile = {"frames": n_frames,
                "stages": [("narration and timing", t_voice - t_start), ("layout, music and poster", t_frames - t_voice),

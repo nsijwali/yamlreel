@@ -21,7 +21,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from . import shorts
+from . import proclife, shorts
 
 SR = 44100
 MAX_EVENTS = 500
@@ -32,6 +32,7 @@ TARGET_LUFS = -14.0          # what YouTube, Shorts and Reels roughly aim for
 LUFS_TOLERANCE = 2.0
 TRUE_PEAK_CEILING = -1.0     # dBTP; AAC encoding can overshoot a hotter file
 LOOP_FLOOR = 0.004           # mean pixel step (0-1) that no loop check flags
+TIMEOUT = proclife.Deadlines.subprocess  # seconds one ffmpeg run may take before it is stopped
 
 
 class PolishError(ValueError):
@@ -46,8 +47,16 @@ def _ffmpeg() -> str:
     return exe
 
 
+def _bounded(cmd: list[str], what: str) -> subprocess.CompletedProcess:
+    """`cmd` with its output captured, stopped after TIMEOUT seconds (a PolishError)."""
+    try:
+        return proclife.run(cmd, TIMEOUT, what)
+    except proclife.ProcessTimeout as e:
+        raise PolishError(str(e)) from e
+
+
 def _run(cmd: list[str], what: str) -> subprocess.CompletedProcess:
-    done = subprocess.run(cmd, capture_output=True)
+    done = _bounded(cmd, what)
     if done.returncode != 0:
         tail = done.stderr.decode("utf-8", "replace").strip().splitlines()[-3:]
         raise PolishError(f"ffmpeg failed while {what}: {' | '.join(tail) or 'no message'}")
@@ -68,8 +77,7 @@ class Probe:
 def probe(video: Path) -> Probe:
     if not video.is_file():
         raise PolishError(f"{video} is not a file")
-    done = subprocess.run([_ffmpeg(), "-hide_banner", "-protocol_whitelist", "file", "-i", str(video)],
-                          capture_output=True)       # no output file: ffmpeg exits 1 after printing the streams
+    done = _bounded([_ffmpeg(), "-hide_banner", "-protocol_whitelist", "file", "-i", str(video)], "probing the video")       # no output file: ffmpeg exits 1 after printing the streams
     text = done.stderr.decode("utf-8", "replace")
     dur = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
     size = re.search(r"Video:.*?,\s*(\d{2,5})x(\d{2,5})", text)
@@ -94,8 +102,8 @@ def measure_audio(video: Path) -> Audio | None:
     """Integrated loudness, loudness range and true peak (EBU R128), or None when the video has no audio."""
     if not probe(video).has_audio:
         return None
-    done = subprocess.run([_ffmpeg(), "-hide_banner", "-nostats", "-protocol_whitelist", "file", "-i", str(video),
-                           "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"], capture_output=True)
+    done = _bounded([_ffmpeg(), "-hide_banner", "-nostats", "-protocol_whitelist", "file", "-i", str(video),
+                     "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"], "measuring the loudness")
     if done.returncode != 0:
         raise PolishError("ffmpeg could not measure the audio")
     text = done.stderr.decode("utf-8", "replace")

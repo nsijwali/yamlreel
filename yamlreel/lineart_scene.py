@@ -11,11 +11,13 @@ import json
 import os
 import threading
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from importlib import resources
 from typing import Any, ClassVar
 
 from PIL import Image
 
+from .browserlife import DEFAULT_BROWSER_SECONDS
 from .scenebase import Ctx, Scene
 from .shots import CHROMIUM_ARGS
 
@@ -76,9 +78,11 @@ class _Page:
             cls._thread.start()
         return asyncio.run_coroutine_threadsafe(coro, cls._loop)
 
-    def __init__(self, W: int, H: int, colors: dict[str, str], chromium: str | None):
+    def __init__(self, W: int, H: int, colors: dict[str, str], chromium: str | None,
+                 timeout: float = DEFAULT_BROWSER_SECONDS):
         from playwright.async_api import async_playwright   # ImportError here: the scene falls back to typed text
         self.W, self.H, self.colors = W, H, colors
+        self.timeout = timeout   # seconds the browser may take to start, or to draw one frame
         self.browser: Any = None
         self._tabs: list[_Tab] = []
         self._ahead: dict[tuple[str, float], Future] = {}
@@ -86,7 +90,7 @@ class _Page:
         self.dropped = 0   # frames asked for ahead of time and forgotten before they were collected
         self._clip = {"x": 0, "y": 0, "width": W, "height": H, "scale": 1}
         try:
-            self._run(self._start(async_playwright, chromium)).result()
+            self._wait(self._run(self._start(async_playwright, chromium)))
         except BaseException:
             self.close()
             raise
@@ -174,8 +178,16 @@ class _Page:
         """The frame at `t`: the one already being drawn if it was asked for ahead of time, else drawn now."""
         started = self._ahead.pop((key, t), None)
         if started is not None and not started.cancelled():
-            return started.result()
-        return self._run(self._draw(payload, key, t, duration)).result()
+            return self._wait(started)
+        return self._wait(self._run(self._draw(payload, key, t, duration)))
+
+    def _wait(self, job: Future) -> Any:
+        """The result of a browser job, or TimeoutError (the job is cancelled) after `self.timeout` seconds."""
+        try:
+            return job.result(timeout=self.timeout)
+        except FutureTimeout:
+            job.cancel()
+            raise TimeoutError(f"the browser did not answer within {self.timeout:g}s (timeouts.browser_frame)") from None
 
     # The two captures of the first page as it stands, for the test that compares them.
     @property
@@ -183,10 +195,10 @@ class _Page:
         return self._tabs[0].cdp
 
     def png(self) -> bytes:
-        return self._run(self._png(self._tabs[0])).result()
+        return self._wait(self._run(self._png(self._tabs[0])))
 
     def standard_png(self) -> bytes:
-        return self._run(self._tabs[0].page.screenshot(type="png")).result()
+        return self._wait(self._run(self._tabs[0].page.screenshot(type="png")))
 
     def close(self) -> None:
         for started in self._ahead.values():
@@ -207,7 +219,7 @@ class _Page:
             raise cls._failed[key]
         if key not in cls._open:
             try:
-                cls._open[key] = cls(ctx.W, ctx.H, colors, ctx.chromium)
+                cls._open[key] = cls(ctx.W, ctx.H, colors, ctx.chromium, ctx.browser_timeout)
             except Exception as e:
                 cls._failed[key] = e
                 raise

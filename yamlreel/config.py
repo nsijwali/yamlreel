@@ -30,7 +30,7 @@ CONFIG_FILENAME = "yamlreel.config.yaml"
 # keys any config layer (and the spec) may set
 SHARED_KEYS = {"theme", "themes", "formats", "watermark", "music", "meta", "poster", "fps", "output_dir", "limits", "voiceover", "transition", "subtitles", "mix"}
 # keys only the user config / CLI may set (they widen access)
-TRUSTED_KEYS = {"allow_paths", "allow_private_hosts", "chromium_path", "font_dir", "voice_server"}
+TRUSTED_KEYS = {"allow_paths", "allow_private_hosts", "chromium_path", "font_dir", "voice_server", "timeouts"}
 
 DEFAULTS: dict[str, Any] = {
     "theme": "sumi",
@@ -103,6 +103,7 @@ class Config:
     chromium_path: str | None = None
     font_dirs: list[str] = field(default_factory=list)
     voice_server: dict[str, Any] | None = None  # {url, client_id}; user config / CLI only
+    timeouts: dict[str, Any] = field(default_factory=dict)  # process deadlines (proclife.Deadlines); user config only
     sources: list[Path] = field(default_factory=list)
 
 
@@ -198,7 +199,7 @@ def _check_keys(path: Path, raw: dict[str, Any], trusted: bool) -> None:
         if key not in allowed:
             note = ""
             if isinstance(key, str) and key in TRUSTED_KEYS:
-                note = "allow_paths, allow_private_hosts, chromium_path, font_dir and voice_server are only read from the user config or the CLI"
+                note = "allow_paths, allow_private_hosts, chromium_path, font_dir, voice_server and timeouts are only read from the user config or the CLI"
             raise unknown_key("", key, allowed, f"config {path}", ConfigError, "unknown or not-permitted field", note)
 
 
@@ -230,6 +231,11 @@ def load_config(explicit: str | Path | None = None, cwd: Path | None = None,
                 if not isinstance(vs, dict) or set(vs) - {"url", "client_id", "timeout"}:
                     raise ConfigError(f"{path}: voice_server is {{url, client_id, timeout}}")
                 cfg.voice_server = {**(cfg.voice_server or {}), **vs}
+            t = raw.pop("timeouts", None)
+            if t is not None:
+                if not isinstance(t, dict):
+                    raise ConfigError(f"{path}: timeouts must be a mapping of seconds")
+                cfg.timeouts = {**cfg.timeouts, **t}
             fd = raw.pop("font_dir", None)
             if fd:
                 cfg.font_dirs.append(str(fd))
@@ -247,6 +253,8 @@ def load_config(explicit: str | Path | None = None, cwd: Path | None = None,
         cfg.data["limits"] = clamp_limits(cfg.data.get("limits"))
         if cfg.voice_server is not None:
             check_voice_server(cfg.voice_server)
+        from .proclife import Deadlines
+        Deadlines.from_config(cfg.timeouts)   # checked here, so a bad value is a config error before any render
     except ValueError as e:
         raise ConfigError(str(e)) from e
     return cfg

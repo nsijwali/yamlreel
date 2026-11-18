@@ -20,6 +20,7 @@ from . import voicecheck
 from .config import CONFIG_FILENAME, config_base, Config, ConfigError, load_config, user_config_path
 from .voice import VoiceError, VoiceServer
 from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, only_label, render, share_copy
+from .proclife import Deadlines
 from .safety import UnsafeInput, resolve_local
 from .shots import CaptureError
 from .specs import FORMATS, MUSIC_STYLES, SpecError, check_frame_budget, load_spec
@@ -50,7 +51,8 @@ def _runtime(spec: dict, cfg: Config, music_override: str | None = None, no_voic
     if music_override and music_override not in MUSIC_STYLES:
         roots.append(Path(music_override).expanduser().resolve().parent)  # named on the command line: trusted
     voice = VoiceServer(**cfg.voice_server) if cfg.voice_server and not no_voice else None
-    return Runtime(roots=roots, allow_private_hosts=cfg.allow_private_hosts, chromium=cfg.chromium_path, voice=voice)
+    return Runtime(roots=roots, allow_private_hosts=cfg.allow_private_hosts, chromium=cfg.chromium_path, voice=voice,
+                   deadlines=Deadlines.from_config(cfg.timeouts))
 
 
 def _confined_output_dir(spec: dict, cfg: Config) -> Path:
