@@ -17,6 +17,9 @@ from __future__ import annotations
 import queue
 import subprocess
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, fields
 from types import TracebackType
 from typing import IO, Any, Mapping
@@ -64,6 +67,25 @@ class Deadlines:
     def finish_for(self, video_seconds: float) -> float:
         """How long the encoder may take after the last frame of a `video_seconds` video."""
         return self.encoder_finish + self.finish_per_second * max(0.0, video_seconds)
+
+
+_SUBPROCESS_SECONDS: ContextVar[float] = ContextVar("yamlreel_subprocess_seconds", default=Deadlines.subprocess)
+
+
+def subprocess_seconds() -> float:
+    """The `timeouts.subprocess` in force: what the CLI set from the user config, else the default."""
+    return _SUBPROCESS_SECONDS.get()
+
+
+@contextmanager
+def subprocess_deadline(seconds: float) -> Iterator[None]:
+    """Within the block, one-shot ffmpeg runs that are not given a timeout (polish, mixdown defaults, voice speed)
+    use `seconds`."""
+    token = _SUBPROCESS_SECONDS.set(seconds)
+    try:
+        yield
+    finally:
+        _SUBPROCESS_SECONDS.reset(token)
 
 
 def stop(proc: subprocess.Popen, grace: float = STOP_GRACE) -> None:

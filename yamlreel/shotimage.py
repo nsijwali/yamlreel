@@ -16,13 +16,17 @@ from .shots import CaptureError, MAX_IMAGE_PIXELS, _open_image
 
 
 def image_size(p: Path) -> tuple[int, int]:
-    """The size of the image at `p` from its header (no decode), with the same checks as decoding it."""
+    """The size of the image at `p`, after the same checks as drawing it: the pixel limit from the header, then one
+    full decode whose pixels are dropped at once, so truncated or corrupt data is reported now, with the scene,
+    rather than in the middle of the render."""
     try:
         with Image.open(p) as im:
             if im.width * im.height > MAX_IMAGE_PIXELS:
                 raise CaptureError(f"{p.name}: image is {im.width}x{im.height}; the limit is {MAX_IMAGE_PIXELS} pixels")
-            return im.size
-    except (OSError, Image.DecompressionBombError) as e:
+            size = im.size
+            im.load()   # raises for truncated or corrupt image data
+            return size
+    except (OSError, Image.DecompressionBombError, SyntaxError, ValueError) as e:
         raise CaptureError(f"cannot read image {p.name}: {e}") from e
 
 

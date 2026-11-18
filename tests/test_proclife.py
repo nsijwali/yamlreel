@@ -293,3 +293,40 @@ def test_a_lineart_frame_that_times_out_falls_back_to_typed_text(tmp_path, monke
     scene = lineart_scene.LineArtScene({"type": "lineart", "text": "hello", "seconds": 2}, ctx)
     img = scene.frame(0.5)
     assert img.size == (270, 480) and any("TimeoutError" in w for w in ctx.warnings)
+
+
+def test_the_user_subprocess_deadline_reaches_polish_mixdown_and_voice_speed(monkeypatch, tmp_path):
+    import numpy as np
+    from yamlreel import ffmpegtools, mixdown, polish
+    from yamlreel import voice as voice_mod
+    seen = []
+
+    def fake_run(cmd, timeout, what):
+        seen.append(timeout)
+        raise ProcessTimeout(f"stopped after {timeout:g}s")
+
+    monkeypatch.setattr(proclife, "run", fake_run)
+    monkeypatch.setattr(ffmpegtools, "ffmpeg_exe", lambda: "ffmpeg")
+    assert proclife.subprocess_seconds() == Deadlines().subprocess
+    with proclife.subprocess_deadline(42):
+        with pytest.raises(polish.PolishError):
+            polish._run(["ffmpeg"], "mixing")
+        with pytest.raises(mixdown.MixError):
+            mixdown._run(["ffmpeg"], "mastering")
+        with pytest.raises(mixdown.MixError):
+            mixdown.measure("ffmpeg", tmp_path / "x.wav")
+        with pytest.raises(voice_mod.VoiceError, match="stopped after 42s"):
+            voice_mod.change_speed(np.zeros(4410, dtype=np.float32), 1.1)
+    assert seen == [42, 42, 42, 42] and proclife.subprocess_seconds() == Deadlines().subprocess
+
+
+def test_cli_audit_uses_the_timeouts_from_the_user_config(tmp_path, monkeypatch):
+    from yamlreel import polish
+    from yamlreel.cli import main
+    monkeypatch.setenv("YAMLREEL_CONFIG", str(tmp_path / "user.yaml"))
+    (tmp_path / "user.yaml").write_text("timeouts: {subprocess: 33}\n")
+    monkeypatch.chdir(tmp_path)
+    seen = []
+    monkeypatch.setattr(polish, "audit_video", lambda v, t: seen.append(proclife.subprocess_seconds()) or
+                        polish.Report(polish.Probe(1, 1, 1, None, False), None, polish.Loop(0, 0)))
+    assert main(["audit", "x.mp4"]) == 0 and seen == [33.0]

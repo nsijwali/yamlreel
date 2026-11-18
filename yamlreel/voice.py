@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 import tempfile
 import time
 import wave
@@ -25,7 +24,7 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 
-from . import ffmpegtools
+from . import ffmpegtools, proclife
 from .atomicfile import write_validated
 from .errorfmt import redact_text, redact_url
 from .voicewire import VoiceError, decode_audio, find_wav_b64 as _find_wav_b64, parse_json as _json, rpc_result  # noqa: F401  (VoiceError is re-exported)
@@ -319,8 +318,8 @@ def change_speed(samples: np.ndarray, speed: float) -> np.ndarray:
         cmd = [ffmpeg, "-loglevel", "error", "-y", "-i", str(src), "-filter:a", f"atempo={speed:.4f}",
                "-ar", str(SAMPLE_RATE), "-ac", "1", str(dst)]
         try:
-            done = subprocess.run(cmd, capture_output=True, timeout=120)
-        except (OSError, subprocess.TimeoutExpired) as e:
+            done = proclife.run(cmd, proclife.subprocess_seconds(), "changing the voiceover speed")
+        except (OSError, proclife.ProcessTimeout) as e:
             raise VoiceError(f"cannot run ffmpeg at {ffmpeg} for voiceover.speed: {e}") from e
         if done.returncode != 0:
             raise VoiceError("ffmpeg failed on voiceover.speed:\n" + done.stderr.decode(errors="replace")[-500:])

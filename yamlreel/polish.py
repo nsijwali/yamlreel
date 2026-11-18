@@ -32,7 +32,6 @@ TARGET_LUFS = -14.0          # what YouTube, Shorts and Reels roughly aim for
 LUFS_TOLERANCE = 2.0
 TRUE_PEAK_CEILING = -1.0     # dBTP; AAC encoding can overshoot a hotter file
 LOOP_FLOOR = 0.004           # mean pixel step (0-1) that no loop check flags
-TIMEOUT = proclife.Deadlines.subprocess  # seconds one ffmpeg run may take before it is stopped
 
 
 class PolishError(ValueError):
@@ -47,9 +46,9 @@ def _ffmpeg() -> str:
 
 
 def _bounded(cmd: list[str], what: str) -> subprocess.CompletedProcess:
-    """`cmd` with its output captured, stopped after TIMEOUT seconds (a PolishError)."""
+    """`cmd` with its output captured, stopped after `timeouts.subprocess` seconds (a PolishError)."""
     try:
-        return proclife.run(cmd, TIMEOUT, what)
+        return proclife.run(cmd, proclife.subprocess_seconds(), what)
     except proclife.ProcessTimeout as e:
         raise PolishError(str(e)) from e
 

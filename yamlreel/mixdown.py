@@ -47,9 +47,9 @@ class Loudness:
     true_peak: float
 
 
-def _run(cmd: list[str], what: str, timeout: float = proclife.Deadlines.subprocess) -> subprocess.CompletedProcess:
+def _run(cmd: list[str], what: str, timeout: float | None = None) -> subprocess.CompletedProcess:
     try:
-        done = proclife.run(cmd, timeout, what)
+        done = proclife.run(cmd, proclife.subprocess_seconds() if timeout is None else timeout, what)
     except proclife.ProcessTimeout as e:
         raise MixError(str(e)) from e
     if done.returncode != 0:
@@ -78,7 +78,8 @@ def write_wav(path: Path, x: np.ndarray) -> Path:
     return path
 
 
-def measure(ffmpeg: str, path: Path, timeout: float = proclife.Deadlines.subprocess) -> Loudness:
+def measure(ffmpeg: str, path: Path, timeout: float | None = None) -> Loudness:
+    timeout = proclife.subprocess_seconds() if timeout is None else timeout
     try:
         err = proclife.run([ffmpeg, "-hide_banner", "-nostats", "-protocol_whitelist", "file", "-i", str(path),
                             "-af", "ebur128=peak=true", "-f", "null", "-"], timeout, "measuring loudness"
@@ -111,7 +112,7 @@ def _fit(x: np.ndarray, n: int) -> np.ndarray:
 
 def master(work: Path, ffmpeg: str, total: float, narration: Path | None, music: Path | None,
            cues: list[sfx_mod.Cue], opts: dict[str, Any], music_volume: float, music_level: float,
-           seed: int = 0, timeout: float = proclife.Deadlines.subprocess) -> tuple[Path, dict[str, float]]:
+           seed: int = 0, timeout: float | None = None) -> tuple[Path, dict[str, float]]:
     """The mastered track for `total` seconds, and its numbers (loudness and true peak before and after)."""
     if total > MAX_MIX_SECONDS:
         raise MixError(f"the video is {total:.0f}s; the mix path handles at most {MAX_MIX_SECONDS:g}s (MAX_MIX_SECONDS)")

@@ -22,6 +22,7 @@ from . import voicecheck
 from .config import CONFIG_FILENAME, config_base, Config, ConfigError, load_config, user_config_path
 from .voice import VoiceError, VoiceServer
 from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, make_plan, only_label, render, share_copy
+from . import proclife
 from .proclife import Deadlines
 from .safety import UnsafeInput, resolve_local
 from .signalexit import exit_on_signals
@@ -211,6 +212,7 @@ def cmd_render(args: argparse.Namespace) -> int:
     rt = _runtime(spec, cfg, args.music, no_voice=args.no_voice)
     results = {}
     with contextlib.ExitStack() as stack:
+        stack.enter_context(proclife.subprocess_deadline(rt.deadlines.subprocess))   # voice speed, mastering
         plan = None   # narration, timing and audio tracks: made once, shared by every format
         for fmt in formats:
             print(f"rendering {fmt} ...", flush=True)
@@ -332,8 +334,14 @@ def cmd_music(args: argparse.Namespace) -> int:
     return 0
 
 
+def _subprocess_deadline() -> contextlib.AbstractContextManager[None]:
+    """`timeouts.subprocess` from the configs, for commands that do not otherwise read them (audit, polish)."""
+    return proclife.subprocess_deadline(Deadlines.from_config(load_config().timeouts).subprocess)
+
+
 def cmd_audit(args: argparse.Namespace) -> int:
-    rep = polish_mod.audit_video(Path(args.video).expanduser(), args.target_lufs)
+    with _subprocess_deadline():
+        rep = polish_mod.audit_video(Path(args.video).expanduser(), args.target_lufs)
     print("\n".join(rep.lines))
     return 1 if args.strict and rep.warnings else 0
 
@@ -341,8 +349,9 @@ def cmd_audit(args: argparse.Namespace) -> int:
 def cmd_polish(args: argparse.Namespace) -> int:
     video = Path(args.video).expanduser()
     out = Path(args.out).expanduser() if args.out else video.with_name(f"{video.stem}-polished.mp4")
-    done = polish_mod.polish_video(video, out, Path(args.sfx).expanduser() if args.sfx else None, args.loudness,
-                                   [Path(a) for a in args.allow_path], args.force)
+    with _subprocess_deadline():
+        done = polish_mod.polish_video(video, out, Path(args.sfx).expanduser() if args.sfx else None, args.loudness,
+                                       [Path(a) for a in args.allow_path], args.force)
     print(f"wrote {done}")
     return 0
 

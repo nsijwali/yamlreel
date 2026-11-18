@@ -322,3 +322,11 @@ def test_peak_rss_of_motion_image_scenes_tracks_the_working_set(tmp_path):
     one = 2000 * 2000 * 4   # one pre-scaled image: 16 MB; pinning all ten held about 128 MB more than two
     small, large = peak(2), peak(10)
     assert large - small < 3 * one, f"peak RSS grew {(large - small) / 2**20:.0f} MB from 2 to 10 motion-image scenes"
+
+
+def test_a_truncated_shot_image_is_reported_with_its_scene_before_rendering(tmp_path):
+    spec = _shots(tmp_path, 3, size=(600, 400))
+    good = (tmp_path / "s1.png").read_bytes()
+    (tmp_path / "s1.png").write_bytes(good[: len(good) // 2])   # header intact, pixel data cut off
+    with pytest.raises(CaptureError, match=r"scenes\[1\]\.source: cannot read image s1.png: .*truncated"):
+        _timeline(tmp_path, spec)
