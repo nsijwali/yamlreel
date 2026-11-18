@@ -22,6 +22,7 @@ from . import subtitles as subs_mod
 from . import voice as voice_mod
 from .badge import Badge, make_badge, step_plan
 from .config import HARD_LIMITS
+from .publish import PublishError, Staging
 from .safety import UnsafeInput, resolve_local
 from .scenes import Ctx, Scene, build_scene, make_caption
 from .shots import CaptureError
@@ -542,7 +543,8 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         spec["music"] = music_mod.with_style(spec["music"], music_override)  # before beat snapping reads the bpm
     out = out_dir / fmt
     out.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="yamlreel-") as td:
+    # Outputs are written into a staging folder and replace the previous ones only once everything succeeded.
+    with tempfile.TemporaryDirectory(prefix="yamlreel-") as td, Staging(out) as stage:
         work = Path(td)
         cache = out_dir / ".cache"
         cache.mkdir(parents=True, exist_ok=True)
@@ -583,16 +585,16 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         n_frames = sum(n1 - n0 for n0, n1 in frame_runs)
         out_seconds = n_frames / fps if only is not None else total
         srt = None
-        srt_path = out / f"subtitles{tag}.srt"
+        srt_name = f"subtitles{tag}.srt"
         if words and (spec.get("subtitles") or {}).get("srt"):
             cues = tl.subtitle_cues()
             if only is not None:
                 cues = _slice_cues(cues, frame_runs, fps)
             if cues or only is None:
-                srt = srt_path
+                srt = stage.path(srt_name)
                 srt.write_text(subs_mod.srt_text(cues, bool(spec["subtitles"].get("uppercase"))), encoding="utf-8")
         if srt is None:
-            srt_path.unlink(missing_ok=True)   # a file from an earlier run would be taken for this one's
+            stage.remove(srt_name)   # a file from an earlier run would be taken for this one's (deleted on publish)
         narration = voice_mod.write_wav(work / "narration.wav", voice_mod.build_track(clips, tl.starts, total)) if clips else None
         duck = None
         if clips and (spec.get("voiceover") or {}).get("duck"):
@@ -617,7 +619,7 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
             narration = None
         poster = tl.frame_at(tl.poster_time())   # also checks poster.scene
         if only is None:
-            poster.convert("RGB").save(out / "poster.jpg", quality=92)
+            poster.convert("RGB").save(stage.path("poster.jpg"), quality=92)
 
         W, H = tl.ctx.W, tl.ctx.H
         cmd = [ffmpeg, "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
@@ -667,8 +669,8 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
                 else:
                     cmd += ["-af", fade]
             cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
-        video = out / f"video{tag}.mp4"
-        cmd += ["-movflags", "+faststart", "-t", f"{out_seconds:.3f}", str(video)]
+        video = stage.final(f"video{tag}.mp4")
+        cmd += ["-movflags", "+faststart", "-t", f"{out_seconds:.3f}", str(stage.path(video.name))]
         errlog = open(work / "ffmpeg.log", "wb")
         try:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=errlog)
@@ -724,7 +726,13 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         sheet = None
         if contact:
             fracs = contact_fracs(contact_frames)
-            sheet = contact_sheet(tl, out / f"contact{tag}.png", fracs=fracs, scenes=only)
+            sheet = stage.final(contact_sheet(tl, stage.path(f"contact{tag}.png"), fracs=fracs, scenes=only).name)
+        try:
+            stage.publish(last=video.name)   # the video last: a new video always comes with its new sidecars
+        except PublishError as e:
+            raise RenderError(str(e)) from e
+        if srt is not None:
+            srt = stage.final(srt_name)
     from .lineart_scene import _Page
     _Page.close_all()   # free Chromium (and let a later format capture a `shot`) before the next format starts
     t_end = clock()
