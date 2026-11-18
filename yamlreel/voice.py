@@ -424,7 +424,13 @@ def prepare_narration(spec: dict[str, Any], server: VoiceServer | None, cache: P
     spoken = 0.0   # seconds the narrated scenes so far need at least
     session: _Session | None = None
     cache.mkdir(parents=True, exist_ok=True)
+    last = -1   # the last narrated scene loaded
     for i, sc in enumerate(spec["scenes"]):
+        if (max_seconds is not None and spoken > max_seconds
+                and (sc.get("narration_audio") or narration_text(sc, vo) is not None)):
+            # another clip is about to be loaded, but the ones so far already make the video too long
+            raise VoiceError(f"the narration up to scene {last} already needs {spoken:.1f}s; the limit is "
+                             f"{max_seconds:g}s (limits.max_seconds), so the remaining clips were not loaded")
         if sc.get("narration_audio"):
             samples = read_wav(resolve_audio(sc["narration_audio"]))
         elif (text := narration_text(sc, vo)) is not None:
@@ -447,9 +453,7 @@ def prepare_narration(spec: dict[str, Any], server: VoiceServer | None, cache: P
         clips[i] = samples
         sc["seconds"] = max(sc["seconds"], min_scene_seconds(samples, gap))
         spoken += min_scene_seconds(samples, gap)   # a lower bound on the video: snapping never cuts speech
-        if max_seconds is not None and spoken > max_seconds:
-            raise VoiceError(f"the narration up to scene {i} already needs {spoken:.1f}s; the limit is "
-                             f"{max_seconds:g}s (limits.max_seconds), so the remaining clips were not loaded")
+        last = i
     return clips
 
 
