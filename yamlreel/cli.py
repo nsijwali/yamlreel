@@ -217,6 +217,10 @@ def cmd_render(args: argparse.Namespace) -> int:
         print(_only_note(first["windows"], len(spec["scenes"]), first["full_seconds"]), file=sys.stderr)
     for fmt, r in results.items():
         print(f"  {fmt}: {r['video']} ({r['seconds']:.1f}s, {r['size'][0]}x{r['size'][1]})")
+        if r.get("mix"):
+            m = r["mix"]
+            print(f"  {fmt} mix: {m['lufs_before']:.1f} LUFS / {m['tp_before']:.1f} dBTP before mastering, "
+                  f"{m['lufs']:.1f} LUFS / {m['tp']:.1f} dBTP after")
         warns += [f"{fmt}: {w}" for w in r["warnings"]]
     for w in warns:
         print(f"  warning: {w}", file=sys.stderr)

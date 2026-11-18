@@ -113,6 +113,32 @@ def soft_pluck(freq: float, dur: float) -> np.ndarray:
     return fir_lowpass(out, 7)
 
 
+def bass(freq: float, dur: float) -> np.ndarray:
+    """Short bass note with its 2nd and 3rd harmonics, so it reads on phone speakers without a heavy sub."""
+    t = _t(dur)
+    x = 0.6 * np.sin(TWO_PI * freq * t) + 0.5 * np.sin(TWO_PI * 2 * freq * t) + 0.2 * np.sin(TWO_PI * 3 * freq * t)
+    return x * np.exp(-t * 4.0) * np.minimum(1.0, t / 0.006)
+
+
+def clap(rng: np.random.Generator, dur: float = 0.25) -> np.ndarray:
+    """Three quick noise bursts, band-limited to the body of a clap."""
+    t = _t(dur)
+    noise = rng.normal(0, 1, len(t))
+    noise = fir_lowpass(noise, 4) - fir_lowpass(noise, 24)
+    env = np.zeros(len(t))
+    for d in (0.0, 0.011, 0.023):
+        env += np.where(t >= d, np.exp(-(t - d) * 60.0), 0.0) * 0.6
+    env += np.exp(-t * 14.0) * 0.35
+    return noise * env
+
+
+def shaker(rng: np.random.Generator, dur: float = 0.08) -> np.ndarray:
+    """A soft, bright tick of noise with a rounded attack."""
+    t = _t(dur)
+    noise = rng.normal(0, 1, len(t))
+    return (noise - fir_lowpass(noise, 4)) * np.minimum(1.0, t / 0.012) * np.exp(-t * 45.0) * 0.4
+
+
 def crackle(rng: np.random.Generator, n: int, per_second: float) -> np.ndarray:
     """Sparse vinyl-style pops: random impulses with random sign, lightly smoothed."""
     hits = (rng.random(n) < per_second / SR) * rng.normal(0, 1, n)

@@ -205,11 +205,12 @@ An impossible state (a `pop` on an empty array, a `mark` outside the cells, a `l
 a node the generated diagram does not have) is an error that names the outline, for example
 `steps[0].events[3].pop: array is empty at 6s`. An event with `text` plus another key but no action key, two action keys
 or a key from another `show` is an error that lists the allowed keys. Any other `show` is an
-error (`events work with show: diagram, meter or array; this step shows bullets`). The scene lasts at least the end of every cue (its `at` plus a meter event's `seconds`) plus 1.5 seconds, so the
+error (`events work with show: diagram, meter, array or motion; this step shows bullets`). The scene lasts at least the end of every cue (its `at` plus a meter event's `seconds`) plus 1.5 seconds, so the
 final cue is never cut off; `events: []` is the same as no events.
 
-`show` is the scene type for a step (`bullets` by default; `title`, `type`, `code`, `stat`, `diagram`, `table`, `array` or
-`grid`). The scene gets placeholder content marked `TODO` (for example a 3 by 3 table), which the header comment of the
+`show` is the scene type for a step (`bullets` by default; `title`, `type`, `code`, `stat`, `diagram`, `table`, `array`,
+`grid` or `motion`). A `motion` step has a rect `a` and a text `t`; its events are `flash` cues (`{at, flash: a, text}`), and an
+event with only `at` and `text` flashes `a`. The scene gets placeholder content marked `TODO` (for example a 3 by 3 table), which the header comment of the
 file lists; replace them, then render with `--preview --no-voice`. Unknown keys, no steps and more than six steps are
 errors. Each scene is at least `words / 2.5 + 1` seconds (narration stretches it if needed). The command refuses to
 overwrite a file unless you pass `--force`; `--theme` and `--format` set them in the spec.
@@ -236,6 +237,8 @@ without narration. A summary goes to stderr: `9 scenes, 7 narrated, ~182 words` 
 | --- | --- |
 | [`examples/cache-stampede-45s.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/cache-stampede-45s.yaml) | A 45-second system-design explainer with a diagram, code and a narrated script. |
 | [`examples/motion-demo.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/motion-demo.yaml) | Scene transitions, staggered bullets and counting-up numbers. |
+| [`examples/motion-s1-demo.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/motion-s1-demo.yaml) | `motion` scenes: an input, action, result beat, kinetic type and a held scene, next to a `diagram` for timing comparison. |
+| [`examples/motion-s2-demo.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/motion-s2-demo.yaml) | `motion` scenes with draw-on (path, arrow, rect outline, circle, type-on), groups and a camera zoom. |
 | [`examples/index-scan.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/index-scan.yaml) | A table that is scanned row by row, a sorted index taking inserts, and a queue. |
 | [`examples/load-balancing-story.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/load-balancing-story.yaml) | The output of `yamlreel story` for [`examples/outlines/load-balancing.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/outlines/load-balancing.yaml): hook, problem, two steps with badges, when to use, and a question end card. |
 | [`examples/subtitles-demo.yaml`](https://github.com/nsijwali/yamlreel/blob/main/examples/subtitles-demo.yaml) | Narrated scenes with karaoke subtitles, highlighted keywords and numbers, and an SRT file. |
@@ -361,6 +364,7 @@ scenes:
 | `lineart` | an ink-on-paper scene drawn by the vendored line-art-animation library: `kind: presenter` (default) has a figure walk in and point at a hook line, `kind: carry` has a figure per item carry data to it | `kind`, `text` (presenter), `items` (carry, 1 to 6) |
 | `cta` | an end card: a question bubble, lettered answer chips (A to D) and a pulsing prompt | `question`, `answers`, `prompt` |
 | `diagram` | boxes and arrows that appear in order, packets flowing, nodes flashing | `nodes`, `edges`, `flash`, `title`, `kicker` |
+| `motion` | text, rectangles and circles that enter, move, pulse and exit, drawn natively (no browser); see [Motion scenes](#motion-scenes) | `elements`, `stagger`, `title`, `flash`, `quality`, `camera` |
 | `shot` | a screenshot of a URL or an image, with a slow camera move | `source`, `zoom`, `focus`, `fit`, `click`, `scroll_y` |
 
 <details>
@@ -370,9 +374,9 @@ scenes:
 
 ```yaml
 meta: {title, description, tags: [], links: [], credits: []}
-theme: sumi | washi | midnight | editorial | <a theme from your config>   # editorial: cream, ink black and burnt orange, serif headings
+theme: sumi | washi | midnight | editorial | studio | <a theme from your config>   # editorial: cream, ink black and burnt orange, serif headings; studio: dark gradient, cyan and red
 formats: [vertical, landscape, square]
-music: {style: koto | ambient | lofi | pulse | piano | none | path/to.mp3, bpm, root, scale, seed: 7, snap: false, volume: 0.9}   # bpm/root/scale default per style
+music: {style: koto | ambient | lofi | pulse | piano | drive | none | path/to.mp3, bpm, root, scale, seed: 7, snap: false, volume: 0.9}   # bpm/root/scale default per style
 transition: fade              # fade | slide | zoom | cut, or {type: slide, seconds: 0.35}; default fade, 0.25 s
 watermark: "Your Name"        # or {text|image: logo.png, position: top-left|top-right|bottom-left|bottom-right, opacity: 0.75, size: 30}
 poster: {scene: 0, at: 2.6}   # optional; default is the first scene, just before it ends
@@ -400,12 +404,12 @@ scenes: [...]                 # every scene also takes: step (badge label), tran
 - **Limits:** `limits.max_seconds` and `limits.max_scenes` are capped at 3600 and 1000, whatever a spec or config sets.
 - **Files:** images, pages, music and logos must sit in the spec's folder, a config folder, or a folder you allow with `--allow-path DIR` (or `allow_paths` in your user config).
 - **Music:** `seed` changes the melody and `snap: true` rounds scene lengths to beats. To use your own track, point `style` at an audio file and credit it in `meta.credits`.
-- **Music styles:** `koto` (default, 72 bpm, D hirajoshi), `ambient` (60, C major: pad chords, a bell motif, a soft pulse), `lofi` (78, D dorian: electric piano, swung drums, vinyl crackle), `pulse` (100, A minor: a plucked arpeggio, bass, kick) and `piano` (76, G major: a melody over left-hand fifths). A style fills in any of `bpm`, `root` and `scale` you leave out, and `--music lofi` swaps in the new style's values for just those. Scales: `hirajoshi`, `in`, `yo`, `iwato`, `major`, `minor`, `dorian`, `pentatonic_major`, `pentatonic_minor`, and any scale works with any style. The new styles are rendered in 30 second blocks, so a long track needs about the same memory as a short one.
+- **Music styles:** `koto` (default, 72 bpm, D hirajoshi), `ambient` (60, C major: pad chords, a bell motif, a soft pulse), `lofi` (78, D dorian: electric piano, swung drums, vinyl crackle), `pulse` (100, A minor: a plucked arpeggio, bass, kick), `piano` (76, G major: a melody over left-hand fifths) and `drive` (104, D minor: a warm pad and a muted pulse; bass, hats and a shaker from `mid`; a soft kick, claps and a high arpeggio at `high`; the pad, pulse and bass dip on every beat like a sidechain). A style fills in any of `bpm`, `root` and `scale` you leave out, and `--music lofi` swaps in the new style's values for just those. Scales: `hirajoshi`, `in`, `yo`, `iwato`, `major`, `minor`, `dorian`, `pentatonic_major`, `pentatonic_minor`, and any scale works with any style. The new styles are rendered in 30 second blocks, so a long track needs about the same memory as a short one.
 - **Energy:** `energy: low | mid | high` on a scene (default `mid`) adds or removes music layers, for example hats and kick at `mid` and snare and bass at `high` in `lofi`. Changes land on the nearest beat and slide over one beat. `koto` ignores it. `yamlreel story` sets it for you.
 - **Ducking:** `voiceover: {duck: true}` lowers the music to `music_level` (default 0.35) only while a clip is speaking: it eases down 0.15 s before the voice and back up over 0.5 s after it, and pauses shorter than 0.6 s stay ducked. Off by default, which keeps the music at `music_level` for the whole video. It also works with a music file, which is decoded first.
-- **Voice debreath:** `voiceover: {trim: true, debreath: true}` (recommended together). `debreath` (default false) silences the long inhale and breath sounds that cloned or TTS voices put between words and at the start of a clip: runs of at least 90 ms of quiet, unvoiced sound that is louder than silence but well under the speech level (which `trim` alone misses). It needs no ffmpeg. Order: debreath, then trim, then speed. It runs after the clip is read from the cache, so the raw audio is untouched and changing it never re-speaks a line; scene lengths and subtitle timing follow the processed clip. It only silences and never changes the clip length: use `trim` to shorten the gaps it leaves. `yamlreel check-voice` applies it too.
+- **Voice debreath:** `voiceover: {trim: true, debreath: true}` (recommended together). `debreath` (default false) silences the long inhale and breath sounds that cloned or TTS voices put between words and at the start of a clip: runs of at least 90 ms of quiet, unvoiced, noise-like sound (spectral centroid 1.5 to 4 kHz, at least 24 dB under the speech, louder than silence) that `trim` alone misses. It keeps 20 ms wherever a run touches speech and leaves vowel edges and f, s, sh, k and t sounds alone (earlier versions, up to 0.3.6, could silence those consonants). It needs no ffmpeg. Order: debreath, then trim, then speed. It runs after the clip is read from the cache, so the raw audio is untouched and changing it never re-speaks a line; scene lengths and subtitle timing follow the processed clip. It only silences and never changes the clip length: use `trim` to shorten the gaps it leaves. `yamlreel check-voice` applies it too.
 - **Voice speed and trim:** `voiceover: {speed: 1.08, trim: true}`. `speed` (0.8 to 1.3, default 1.0) plays every narration clip faster or slower without changing its pitch, using ffmpeg's `atempo` (1.0 does not touch the audio and needs no ffmpeg). `trim` (default false) cuts silence at the start and end of each clip and shortens any quiet gap inside it longer than 0.3 s to 0.15 s, which is where breaths sit; it needs no ffmpeg. Both apply to spoken and `narration_audio` clips, trim first and then speed, after the clip is read from the cache. The cache keeps the raw audio under the same key, so changing them never re-speaks a line. Scene lengths and subtitle timing follow the processed clip. With `narration_words`, give times for the processed audio.
-- **Themes:** `sumi` (dark ink), `washi` (warm paper), `midnight` (dark, sans) and `editorial` (cream background, ink-black text, burnt-orange accent, serif headings; the accent is for large text and highlights, not small body text).
+- **Themes:** `sumi` (dark ink), `washi` (warm paper), `midnight` (dark, sans) and `editorial` (cream background, ink-black text, burnt-orange accent, serif headings; the accent is for large text and highlights, not small body text) and `studio` (a dark indigo gradient with a soft light pool and a vignette, cyan accent, red `accent2` for errors; text uses Avenir Next and Menlo where the system has them, else DejaVu).
 - **Watermark:** appears on every frame and the poster. The default corner is bottom-right for landscape and top-left for vertical, because the Shorts buttons cover the right edge and the bottom.
 
 </details>
@@ -414,6 +418,63 @@ scenes: [...]                 # every scene also takes: step (badge label), tran
 - Text never silently overflows. It wraps, then shrinks, and `render` warns you when it had to.
 - In vertical frames, content sits above the lower third, clear of the Shorts UI.
 - A 15-second video carries one idea. Before you publish, check anything you simplified.
+
+## Motion scenes
+
+`type: motion` draws a list of `elements` with Pillow only: no Chrome, and 2 to 4 ms per 1080x1920 frame on a typical beat (an unchanged frame is a copy). Kinds are `text`, `rect`, `circle`, `group`, `arrow`, `path` and `image`, and a scene can have a `camera`.
+
+```yaml
+- type: motion
+  title: A cache hit
+  elements:
+    - {id: card, kind: rect, w: 640, h: 140, y: 0.4, enter: slide-up}
+    - {kind: text, text: "HIT in 0.3 ms", color: accent, y: 0.4, at: 0.35, enter: slide-up}   # same at and enter: they arrive together
+    - {kind: text, text: "Stop guessing.", size: 110, y: 0.6, split: words, stagger: 0.12, enter: pop}   # kinetic type
+  flash: [{node: card, at: 2.0, text: found, color: accent}]
+```
+
+- **Elements:** `x`, `y` (frame fractions of the element centre; `vx`, `vy` in vertical frames), `at` (seconds; without it the first element starts at 0.35 s and each one after it a scene `stagger` (0.4 s by default) later), `enter` (`none`, `fade`, `slide-up|down|left|right`, `pop`, `draw`), `emphasis` (`pulse`), `end` with `exit` (`fade-out`, `slide-out`, `pop-out`), `layer`, `opacity`, `scale`, `rotate` (degrees, clockwise) and up to 8 `moves` (`{at, seconds, easing, x, y, scale, rotate, opacity}`). A preset is a name or `{type, seconds, easing}`. `text` takes `text`, `size`, `font`, `max_w`, `align`, `split: words` and `stagger`; `rect` takes `w`, `h`, `radius`, `fill`, `stroke`, `stroke_width`; `circle` takes `r`, `fill`, `stroke`, `stroke_width`. `group` takes `children` (1 to 20, up to 3 levels deep) and `stagger`: its children move, scale, turn and fade with it, appear with it (`enter: none`) unless they say otherwise, and place themselves by `x`, `y` offsets (-1 to 1) from the group centre. `arrow` takes `from` and `to` (an element `id` or `[x, y]`), `color`, `stroke_width`, `dashed`, `head`; it stops 10u short of the boxes it joins and follows them when they move. `path` takes `points` (2 to 200 `[x, y]` frame fractions), `closed`, `smooth` (Catmull-Rom), `color`, `stroke_width` and `fill` (closed paths); arrows and paths have no `x`, `y`, `scale` or `rotate`. `image` takes `source` (a local file only; URLs are refused, use a `shot` scene), `w` and/or `h` (the other follows the aspect ratio) and `radius`; at most 8 per scene. `draw` types text out, draws a circle's arc, a rectangle's outline (from the top-left corner), an arrow's shaft and a path.
+- **Easing:** an element may set `easing` (`linear`, `out`, `in_out`, `back`). This replaces the "easing is internal" rule of the motion core, on purpose, so that a preset stays one word.
+- **Time is absolute:** every `at`, `end` and move time is scene seconds. Timing mistakes (an `end` before the element has entered, overlapping moves) are errors; an element that starts after the scene ends is a warning.
+- **Flash:** `flash` takes `node` (an element `id`), `at`, `text`, `color`, as on a `diagram`: the stroke (or text) takes the colour and a tag appears.
+- **Camera:** `camera` is a list of up to 16 keys `{at, seconds (0.8), zoom (0.25 to 4), focus [x, y], vfocus, easing}`; each eases from the view before it (the whole frame to start with). Zoom 1 on `[0.5, 0.5]` is no camera. Elements, strokes and text are scaled before they are drawn (text stays sharp); the background, title and caption do not move. A move re-draws every visible element, so use `quality: draft` for previews.
+- **Quality:** `quality: draft` (fast, aliased shapes), `standard` (default, the same anti-aliasing as `diagram`) or `high`. There is no command-line flag for it yet.
+- **Limits:** 60 elements (groups' children and split words included), 8 moves per element, 40 words per split text, 300 characters of text.
+- `--read-screen` reads a motion scene's `title` and `caption` only.
+
+## Sound design: `sfx:` and `mix:`
+
+`mix:` at the top of a spec turns on a mastered audio path: the narration gets a voice chain (high-pass, a small
+low-mid dip, a presence lift, gentle compression), the music gets room for the voice (a low shelf and a dip near
+3 kHz), every scene's `sfx:` cues play on their own bus (never ducked), and the sum is set to a loudness target with a
+true-peak limiter. Without `mix:` a spec mixes exactly as before.
+
+```yaml
+mix: {loudness: -14, true_peak: -1.5, music_db: -2}   # or `mix: true` for the defaults
+music: {style: drive}
+scenes:
+  - type: motion
+    seconds: 6
+    sfx:
+      - {at: 0.4, sound: tick}                 # seconds from the start of this scene
+      - {at: 2.4, sound: thud}
+      - {at: 3.2, sound: hush, seconds: 0.8}   # the music drops out: a near-silence before a key moment
+      - {at: 4.0, sound: riser, seconds: 1.0}
+      - {at: 5.0, sound: hit, gain: 0.8, pitch: -2}
+```
+
+- **`mix` keys:** `loudness` (-30 to -6 LUFS, default -14), `true_peak` (-6 to 0 dBTP, default -1.5), `music_db` and
+  `sfx_db` (-24 to 12 dB, default 0), `voice_chain` (default true). `render` prints the loudness and true peak before
+  and after mastering. Silence is left silent.
+- **Cues:** `at` (required, seconds from the scene start, on a frame), `sound` (required), `gain` (0 to 2, default 1),
+  `pitch` (-24 to 24 semitones), `seconds` (only for `riser`, `whoosh`, `swell` and `hush`, 0.05 to 10).
+- **Sounds:** `click` (a label lands), `pop` (a card lands), `tick` (a counter steps), `thud` (something goes down),
+  `riser` and `hit` (tension and payoff), `ding` (a token is spent), `drip` (a refill), `whoosh` (a scene change or a
+  camera push), `swell` (a slow fill), `stinger` (a closing question), `deny` (a refused request) and `hush` (no
+  sound: the music drops out). All are synthesised, so there is nothing to license. Give each sound one meaning.
+- **Limits:** at most 40 cues per scene and 400 per spec (`MAX_CUES`); `sfx` without `mix:` is an error; a cue at or
+  past its scene's length is dropped with a warning; the mix path takes videos of at most 600 s (`MAX_MIX_SECONDS`).
+- **Music files** in `music.style` are decoded to mono 44.1 kHz first, so MP3s and 48 kHz or 24-bit WAVs work.
 
 ## Line-art scenes
 

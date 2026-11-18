@@ -8,33 +8,10 @@ from typing import Any, ClassVar
 from PIL import Image, ImageDraw, ImageFilter
 
 from .datascenes import ArrayScene, CtaScene, GridScene, MeterScene, TableScene, TimelineScene, TreeScene
-from .scenebase import Ctx, Scene, _appear, kicker_shift, make_kicker
+from .scenebase import SS, Ctx, Scene, _SS_MARGIN, _appear, downsample, kicker_shift, make_kicker  # noqa: F401  (SS, _SS_MARGIN and downsample are re-exported)
 from .shots import load_shot
 from .textkit import TextBlock, blit, ease_in_out, ease_out, lerp_color, make_block, split_count
 from .theme import Color, Theme, font
-
-SS = 2  # diagram supersampling
-_SS_MARGIN = 16  # layer pixels kept around the drawn area: more than the reach of the LANCZOS filter (3 * SS)
-
-
-def downsample(layer: Image.Image) -> tuple[Image.Image, tuple[int, int]] | None:
-    """The drawn part of a supersampled RGBA layer at 1x, and where to paste it: the same pixels as
-    `layer.resize(half, LANCZOS)`, in a fraction of the time, because only the area that has ink is resized.
-    None for an empty layer. To match the whole-layer resize exactly, the crop sits on even pixel bounds with a
-    margin wider than the filter, and the two passes run in Pillow's order for a full frame (across, then down);
-    left to itself Pillow picks the order by the shape of the image, and the other order rounds differently."""
-    box = layer.getbbox()
-    if box is None:
-        return None
-    x0 = max(0, (box[0] - _SS_MARGIN) // SS * SS)
-    y0 = max(0, (box[1] - _SS_MARGIN) // SS * SS)
-    x1 = min(layer.width, -(-(box[2] + _SS_MARGIN) // SS) * SS)
-    y1 = min(layer.height, -(-(box[3] + _SS_MARGIN) // SS) * SS)
-    part = layer.crop((x0, y0, x1, y1)).convert("RGBa")   # premultiplied, as Image.resize does for RGBA
-    w, h = part.width // SS, part.height // SS
-    small = part.resize((w, part.height), Image.LANCZOS).resize((w, h), Image.LANCZOS)
-    return small.convert("RGBA"), (x0 // SS, y0 // SS)
-
 
 # Options of a `shot` scene that are passed to the screenshot capture (and so are part of its cache key).
 CAPTURE_OPTS = ("viewport", "scale", "click", "scroll_y", "wait_ms", "full_page")
@@ -592,6 +569,8 @@ SCENE_TYPES = {"title": TitleScene, "type": TypeScene, "shot": ShotScene, "diagr
                "timeline": TimelineScene, "grid": GridScene, "cta": CtaScene}
 from .lineart_scene import LineArtScene  # noqa: E402  (it imports Scene from scenebase, so no cycle)
 SCENE_TYPES["lineart"] = LineArtScene
+from .motion_scene import MotionScene  # noqa: E402  (it imports only scenebase, textkit, theme and anim, so no cycle)
+SCENE_TYPES["motion"] = MotionScene
 
 
 def build_scene(spec: dict[str, Any], ctx: Ctx) -> Scene:

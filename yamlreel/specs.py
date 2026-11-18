@@ -28,6 +28,8 @@ from .music import ENERGY_LEVELS, NOTE_OFFSETS, SCALES, STYLE_DEFAULTS
 from .subtitles import (DEFAULT_SUBTITLES, MAX_KEYWORD_CHARS, MAX_KEYWORDS, POSITIONS, STYLES)
 from .scenes import SCENE_TYPES, DiagramScene, Scene
 from .lineart_scene import KINDS as LINEART_KINDS
+from . import anim
+from . import motion_scene as motion
 from .textkit import MAX_COUNT_MAGNITUDE, split_count
 from .theme import get_theme
 from .voice import MAX_SPEED, MIN_SPEED
@@ -37,7 +39,7 @@ FORMATS = {"landscape": (1920, 1080), "vertical": (1080, 1920), "square": (1080,
 
 DEFAULT_SECONDS = {"title": 3.0, "type": 3.0, "shot": 4.0, "diagram": 7.0,
                    "bullets": 5.0, "code": 6.0, "stat": 3.5, "table": 8.0, "array": 8.0, "meter": 10.0, "tree": 8.0,
-                   "timeline": 10.0, "grid": 10.0, "cta": 6.0, "lineart": 6.0}
+                   "timeline": 10.0, "grid": 10.0, "cta": 6.0, "lineart": 6.0, "motion": 6.0}
 REQUIRED = {
     "title": ["title"],
     "type": ["text"],
@@ -54,6 +56,7 @@ REQUIRED = {
     "grid": ["cells"],
     "cta": ["question"],
     "lineart": [],
+    "motion": ["elements"],
 }
 MUSIC_STYLES = {*STYLE_DEFAULTS, "none"}
 TRANSITIONS = ("fade", "slide", "zoom", "cut")
@@ -962,8 +965,434 @@ def _timeline_window(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[d
     return out
 
 
+# --- motion scenes --------------------------------------------------------------------------------------
+
+MOTION_FRACTION = (-0.5, 1.5)      # x and y of an element, as frame fractions
+MOTION_SCALE = (0.05, 8)
+MOTION_ROTATE = (-720, 720)
+MOTION_LAYER = (-100, 100)
+MOTION_SECONDS = (0.05, 10)
+MOTION_PULSE_SECONDS = (0.1, 5)
+MOTION_PULSE_REPEAT = (1, 10)
+MOTION_TEXT_SIZE = (12, 400)
+MOTION_MAX_W = (0.1, 1)
+MOTION_WORD_STAGGER = (0, 3)
+MOTION_RECT_SIZE = (1, 4000)
+MOTION_RADIUS = (0, 1000)
+MOTION_CIRCLE_R = (1, 2000)
+MOTION_STROKE = (0, 40)
+MOTION_OFFSET = (-1, 1)            # x and y of a group member: an offset from the group centre
+MOTION_GROUP_STAGGER = (0, 3)
+MOTION_ARROW_STROKE = (1, 40)
+MOTION_ZOOM = (0.25, 4)
+MAX_COMPOSED_SCALE = 16            # an element's scale times the scales of the groups around it
+MOTION_CAMERA_SECONDS = (0, 10)
+QUALITIES = tuple(motion.QUALITY_FACTORS)
+
+
+@dataclass
+class _MotionCtx:
+    """What one motion scene's element checks share: element ids (nested ones too), the arrow ends to resolve, and the
+    number of images."""
+    seen: set[str] = field(default_factory=set)
+    refs: list[tuple[str, str]] = field(default_factory=list)   # (path, element id) of every arrow end
+    images: int = 0
+    leaves: int = 0          # drawable leaves so far (a split text counts its words), checked as it grows
+    where: str = ""          # the path of the `elements` list, for the leaf-limit message
+
+
+def _quality(path: str, v: Any, sc: dict[str, Any], env: _Env) -> str:
+    return _choice(path, v, QUALITIES)
+
+
+def _join_names(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _preset(path: str, v: Any, group: str, kind: str, el: dict[str, Any]) -> dict[str, Any]:
+    """An enter or exit preset: a name, or {type, seconds, easing}. Normalised to the mapping with all three keys."""
+    table = anim.ENTER_PRESETS if group == "enter" else anim.EXIT_PRESETS
+    if isinstance(v, str):
+        v = {"type": v}
+    if not isinstance(v, dict) or not v:
+        raise SpecError(f"{path} must be one of {', '.join(table)} or a mapping with type, seconds and easing")
+    _no_unknown(path, v, motion.ENTER_FIELDS, f"an {group} preset")
+    if "type" not in v:
+        raise SpecError(f"{path}: needs type")
+    name = _choice(f"{path}.type", v["type"], table)
+    if name not in motion.KINDS[kind].PRESETS and name != "none":
+        who = [k for k, e in motion.KINDS.items() if name in e.PRESETS]
+        raise SpecError(f"{path}: {name} works with {_join_names(who)} elements")
+    seconds = None
+    if "seconds" in v:   # `none` takes no time: a given value is checked and ignored, so its own output validates again
+        seconds = _number(f"{path}.seconds", v["seconds"], 0 if name == "none" else MOTION_SECONDS[0], MOTION_SECONDS[1])
+    easing = _choice(f"{path}.easing", v["easing"], anim.EASING_NAMES) if "easing" in v else el.get("easing")
+    t = anim.preset_timing(group, name, seconds, easing)
+    return {"type": t.type, "seconds": t.seconds, "easing": t.easing}
+
+
+def _emphasis(path: str, v: Any) -> dict[str, Any]:
+    if isinstance(v, str):
+        v = {"type": v}
+    if not isinstance(v, dict) or not v:
+        raise SpecError(f"{path} must be pulse or a mapping with type, at, seconds and repeat")
+    _no_unknown(path, v, motion.EMPHASIS_FIELDS, "an emphasis")
+    if "type" not in v:
+        raise SpecError(f"{path}: needs type")
+    out: dict[str, Any] = {"type": _choice(f"{path}.type", v["type"], anim.EMPHASIS_PRESETS)}
+    if "at" in v:
+        out["at"] = _number(f"{path}.at", v["at"], 0, MAX_CUE_SECONDS)
+    out["seconds"] = _number(f"{path}.seconds", v.get("seconds", anim.EMPHASIS_PRESETS["pulse"]), *MOTION_PULSE_SECONDS)
+    out["repeat"] = _number(f"{path}.repeat", v.get("repeat", 1), *MOTION_PULSE_REPEAT, integer=True)
+    return out
+
+
+def _move(path: str, v: Any, rng: tuple[float, float] = MOTION_FRACTION, only: frozenset[str] | None = None) -> dict[str, Any]:
+    v = _mapping(path, v)
+    _no_unknown(path, v, motion.MOVE_FIELDS if only is None else motion.MOVE_FIELDS - (motion.POSITION_FIELDS - only),
+                "a move")
+    if "at" not in v:
+        raise SpecError(f"{path}: needs at")
+    out: dict[str, Any] = {"at": _number(f"{path}.at", v["at"], 0, MAX_CUE_SECONDS),
+                           "seconds": _number(f"{path}.seconds", v.get("seconds", 0.6), *MOTION_SECONDS),
+                           "easing": _choice(f"{path}.easing", v.get("easing", "in_out"), anim.EASING_NAMES)}
+    targets = {"x": rng, "y": rng, "vx": rng, "vy": rng,
+               "scale": MOTION_SCALE, "rotate": MOTION_ROTATE, "opacity": (0, 1)}
+    if only is not None:
+        targets = {k: b for k, b in targets.items() if k in only or k not in motion.POSITION_FIELDS}
+    for k, bounds in targets.items():
+        if k in v:
+            out[k] = _number(f"{path}.{k}", v[k], *bounds)
+    if not any(k in out for k in targets):
+        raise SpecError(f"{path}: needs at least one of {', '.join(targets)}")
+    return out
+
+
+def _fill_name(path: str, v: Any) -> str:
+    return _choice(path, v, motion.FILL_CHOICES)
+
+
+def _stroke_color(path: str, v: Any) -> str:
+    return _choice(path, v, motion.MOTION_COLORS)
+
+
+def _endpoint(path: str, v: Any, mc: _MotionCtx) -> Any:
+    """An arrow end: an element id, or [x, y] frame fractions."""
+    if isinstance(v, list):
+        if len(v) != 2:
+            raise SpecError(f"{path} must be an element id or [x, y]")
+        return [_number(f"{path}[{n}]", c, *MOTION_FRACTION) for n, c in enumerate(v)]
+    ref = _node_id(path, v)
+    mc.refs.append((path, ref))
+    return ref
+
+
+def _kind_fields(path: str, kind: str, el: dict[str, Any], out: dict[str, Any], mc: _MotionCtx) -> None:
+    """The fields of one element kind, checked into `out`."""
+    if kind == "text":
+        if "text" not in el:
+            raise SpecError(f"{path}: a text element needs text")
+        text = _text(f"{path}.text", el["text"], anim.MAX_MOTION_TEXT, "MAX_MOTION_TEXT")
+        if not text.strip():
+            raise SpecError(f"{path}.text must not be empty")
+        out["text"] = text
+        if "size" in el:
+            out["size"] = _number(f"{path}.size", el["size"], *MOTION_TEXT_SIZE)
+        if "font" in el:
+            out["font"] = _choice(f"{path}.font", el["font"], motion.TEXT_FONTS)
+        if "max_w" in el:
+            out["max_w"] = _number(f"{path}.max_w", el["max_w"], *MOTION_MAX_W)
+        if "align" in el:
+            out["align"] = _choice(f"{path}.align", el["align"], motion.TEXT_ALIGNS)
+        if "split" in el:
+            out["split"] = _choice(f"{path}.split", el["split"], motion.SPLITS)
+        if "stagger" in el:
+            out["stagger"] = _number(f"{path}.stagger", el["stagger"], *MOTION_WORD_STAGGER)
+        if "color" in el:
+            out["color"] = _stroke_color(f"{path}.color", el["color"])
+        return
+    if kind == "arrow":
+        for k in ("from", "to"):
+            if k not in el:
+                raise SpecError(f"{path}: an arrow element needs from and to")
+            out[k] = _endpoint(f"{path}.{k}", el[k], mc)
+        if "color" in el:
+            out["color"] = _stroke_color(f"{path}.color", el["color"])
+        if "stroke_width" in el:
+            out["stroke_width"] = _number(f"{path}.stroke_width", el["stroke_width"], *MOTION_ARROW_STROKE)
+        for k in ("dashed", "head"):
+            if k in el:
+                out[k] = _bool(f"{path}.{k}", el[k])
+        return
+    if kind == "path":
+        if "points" not in el:
+            raise SpecError(f"{path}: a path element needs points")
+        pts = _list(f"{path}.points", el["points"], 2, motion.motion_paths.MAX_PATH_POINTS, "MAX_PATH_POINTS")
+        out["points"] = []
+        for n, pt in enumerate(pts):
+            if not isinstance(pt, list) or len(pt) != 2:
+                raise SpecError(f"{path}.points[{n}] must be [x, y]")
+            out["points"].append([_number(f"{path}.points[{n}][{i}]", c, *MOTION_FRACTION) for i, c in enumerate(pt)])
+        for k in ("closed", "smooth"):
+            if k in el:
+                out[k] = _bool(f"{path}.{k}", el[k])
+        if "color" in el:
+            out["color"] = _stroke_color(f"{path}.color", el["color"])
+        if "stroke_width" in el:
+            out["stroke_width"] = _number(f"{path}.stroke_width", el["stroke_width"], *MOTION_ARROW_STROKE)
+        if "fill" in el:
+            out["fill"] = _fill_name(f"{path}.fill", el["fill"])
+            if out["fill"] != "none" and not out.get("closed"):
+                raise SpecError(f"{path}.fill: needs closed: true")
+        return
+    if kind == "image":
+        if "source" not in el:
+            raise SpecError(f"{path}: an image element needs source")
+        src = el["source"]
+        if not isinstance(src, str) or not src.strip():
+            raise SpecError(f"{path}.source must be a path to a local image file")
+        if shots.is_url(src):
+            raise SpecError(f"{path}.source: must be a local file; use a shot scene for web pages")
+        out["source"] = _text(f"{path}.source", src)
+        for k in ("w", "h"):
+            if k in el:
+                out[k] = _number(f"{path}.{k}", el[k], *MOTION_RECT_SIZE)
+        if "w" not in out and "h" not in out:
+            raise SpecError(f"{path}: an image element needs w or h")
+        if "radius" in el:
+            out["radius"] = _number(f"{path}.radius", el["radius"], *MOTION_RADIUS)
+        mc.images += 1
+        return
+    if kind == "group":
+        return   # its children are checked by _element, which knows the timing
+    if kind == "rect":
+        if "w" not in el or "h" not in el:
+            raise SpecError(f"{path}: a rect element needs w and h")
+        out["w"] = _number(f"{path}.w", el["w"], *MOTION_RECT_SIZE)
+        out["h"] = _number(f"{path}.h", el["h"], *MOTION_RECT_SIZE)
+        if "radius" in el:
+            out["radius"] = _number(f"{path}.radius", el["radius"], *MOTION_RADIUS)
+    else:
+        if "r" not in el:
+            raise SpecError(f"{path}: a circle element needs r")
+        out["r"] = _number(f"{path}.r", el["r"], *MOTION_CIRCLE_R)
+    for k in ("fill", "stroke"):
+        if k in el:
+            out[k] = _fill_name(f"{path}.{k}", el[k])
+    if "stroke_width" in el:
+        out["stroke_width"] = _number(f"{path}.stroke_width", el["stroke_width"], *MOTION_STROKE)
+    fill = out.get("fill", "card" if kind == "rect" else "accent")
+    stroke = out.get("stroke", "accent2" if kind == "rect" else "none")
+    if fill == "none" and stroke == "none":
+        raise SpecError(f"{path}: a {kind} element needs a fill or a stroke")
+
+
+def _element(path: str, raw: Any, mc: _MotionCtx, auto_at: float, depth: int = 0, child: bool = False,
+             mult: float = 1.0) -> dict[str, Any]:
+    """One motion element, checked and normalised (presets as mappings, defaults for seconds and easing). `auto_at`
+    is the start it gets from the scene (or, for a child, from its group) when it has no `at`; it is used to check
+    the timing and never written back. `depth` counts the groups around it; a `child` is placed by offsets."""
+    el = _mapping(path, raw)
+    if "kind" not in el:
+        raise SpecError(f"{path}: needs kind")
+    kind = _choice(f"{path}.kind", el["kind"], motion.KINDS)
+    entry = motion.KINDS[kind]
+    _no_unknown(path, el, entry.FIELDS | (motion.COMMON_ELEMENT_FIELDS - entry.REJECTS),
+                f"{'an' if kind[0] in 'aeiou' else 'a'} {kind} element")
+    out: dict[str, Any] = {"kind": kind}
+    if "id" in el:
+        out["id"] = _node_id(f"{path}.id", el["id"])
+        if out["id"] in mc.seen:
+            raise SpecError(f"{path}.id: duplicate element id {out['id']!r}")
+        mc.seen.add(out["id"])
+    place = MOTION_OFFSET if child else MOTION_FRACTION
+    for k in ("x", "y", "vx", "vy"):
+        if k in el:
+            out[k] = _number(f"{path}.{k}", el[k], *place)
+    if "at" in el:
+        out["at"] = _number(f"{path}.at", el["at"], 0, MAX_CUE_SECONDS)
+    if "easing" in el:
+        out["easing"] = _choice(f"{path}.easing", el["easing"], anim.EASING_NAMES)
+    if "layer" in el:
+        out["layer"] = _number(f"{path}.layer", el["layer"], *MOTION_LAYER, integer=True)
+    for k, bounds in (("opacity", (0, 1)), ("scale", MOTION_SCALE), ("rotate", MOTION_ROTATE)):
+        if k in el:
+            out[k] = _number(f"{path}.{k}", el[k], *bounds)
+    _kind_fields(path, kind, el, out, mc)
+    if kind != "group":   # count the drawable leaves as they come, so nested aliases cannot expand without limit
+        mc.leaves += len(out["text"].split()) if out.get("split") == "words" else 1
+        if mc.leaves > anim.MAX_ELEMENTS:
+            raise SpecError(f"{mc.where}: {mc.leaves} drawable elements after groups and split words; the limit is "
+                            f"{anim.MAX_ELEMENTS} (MAX_ELEMENTS)")
+    if "enter" in el:
+        enter = _preset(f"{path}.enter", el["enter"], "enter", kind, out)
+    else:   # a group member appears with its group; anything else fades in
+        default = "none" if child else anim.DEFAULT_ENTER
+        enter = {"type": default, "seconds": anim.ENTER_PRESETS[default][0],
+                 "easing": out.get("easing") or anim.ENTER_PRESETS[default][1]}
+    out["enter"] = enter
+    if kind == "text" and out.get("split") == "words":
+        if enter["type"] == "draw":
+            raise SpecError(f"{path}.split: words cannot be combined with enter: draw")
+        n_words = len(out["text"].split())
+        if n_words > anim.MAX_SPLIT_WORDS:
+            raise SpecError(f"{path}.split: the text has {n_words} words; the limit is {anim.MAX_SPLIT_WORDS} (MAX_SPLIT_WORDS)")
+    if "emphasis" in el:
+        out["emphasis"] = _emphasis(f"{path}.emphasis", el["emphasis"])
+    if "end" in el:
+        out["end"] = _number(f"{path}.end", el["end"], 0, MAX_CUE_SECONDS)
+    if "exit" in el:
+        if "end" not in el:
+            raise SpecError(f"{path}.exit: needs end")
+        out["exit"] = _preset(f"{path}.exit", el["exit"], "exit", kind, out)
+    elif "end" in out:
+        out["exit"] = _preset(f"{path}.exit", anim.DEFAULT_EXIT, "exit", kind, out)
+    if "moves" in el:
+        only = None if entry.POSITIONAL else frozenset()
+        out["moves"] = [_move(f"{path}.moves[{n}]", m, place, only)
+                        for n, m in enumerate(_list(f"{path}.moves", el["moves"], 0, anim.MAX_MOVES, "MAX_MOVES"))]
+    own = max([out.get("scale", 1.0)] + [m["scale"] for m in out.get("moves", []) if "scale" in m])
+    if mult * own > MAX_COMPOSED_SCALE:
+        raise SpecError(f"{path}: scales multiply to {round(mult * own, 1)}x with the groups around it; the limit is "
+                        f"{MAX_COMPOSED_SCALE}x (MAX_COMPOSED_SCALE)")
+    at = out.get("at", auto_at)
+    em = out.get("emphasis")
+    problem = anim.timing_problem(at, enter["seconds"], out.get("end"), [(m["at"], m["seconds"]) for m in out.get("moves", [])],
+                                  None if em is None else (em.get("at"), em["seconds"], em["repeat"]))
+    if problem:
+        raise SpecError(f"{path}.{problem[0]}: {problem[1]}")
+    if kind == "group":
+        if depth + 1 > anim.MAX_GROUP_DEPTH:
+            raise SpecError(f"{path}: groups nest at most {anim.MAX_GROUP_DEPTH} levels deep (MAX_GROUP_DEPTH)")
+        if "children" not in el:
+            raise SpecError(f"{path}: a group element needs children")
+        kids = _list(f"{path}.children", el["children"], 1, anim.MAX_GROUP_CHILDREN, "MAX_GROUP_CHILDREN")
+        if "stagger" in el:
+            out["stagger"] = _number(f"{path}.stagger", el["stagger"], *MOTION_GROUP_STAGGER)
+        step = out.get("stagger", 0.0)
+        out["children"], k = [], 0
+        for n, kid in enumerate(kids):
+            explicit = isinstance(kid, dict) and _is_number(kid.get("at")) and 0 <= kid["at"] <= MAX_CUE_SECONDS
+            kid_at = kid["at"] if explicit else at + k * step
+            k += 0 if explicit else 1
+            out["children"].append(_element(f"{path}.children[{n}]", kid, mc, float(kid_at), depth + 1, True, mult * own))
+    return out
+
+
+def _elements(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
+    items = _list(path, v, 1, anim.MAX_ELEMENTS, "MAX_ELEMENTS")
+    stagger = sc.get("stagger", anim.DEFAULT_STAGGER)   # `stagger` is checked first
+    ats = [e["at"] if isinstance(e, dict) and _is_number(e.get("at")) and 0 <= e["at"] <= MAX_CUE_SECONDS else None
+           for e in items]
+    autos = anim.auto_times(ats, stagger)
+    mc = _MotionCtx(where=path)
+    out = [_element(f"{path}[{n}]", e, mc, autos[n], 0) for n, e in enumerate(items)]
+    for ref_path, ref in mc.refs:
+        if ref not in mc.seen:
+            raise SpecError(f"{ref_path}: unknown element {ref!r}")
+    if mc.images > motion.MAX_IMAGES:
+        raise SpecError(f"{path}: {mc.images} images; the limit is {motion.MAX_IMAGES} (MAX_IMAGES)")
+    return out
+
+
+def _focus(path: str, v: Any) -> list[float]:
+    if not isinstance(v, list) or len(v) != 2:
+        raise SpecError(f"{path} must be [x, y] as fractions of the frame")
+    return [_number(f"{path}[{n}]", c, 0, 1) for n, c in enumerate(v)]
+
+
+def _camera(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
+    """The camera keys: each eases from the view before it (the whole frame to begin with) to `zoom` on `focus`."""
+    out: list[dict[str, Any]] = []
+    prev_end = 0.0
+    for n, ck in enumerate(_list(path, v, 1, motion.MAX_CAMERA_KEYS, "MAX_CAMERA_KEYS")):
+        p = f"{path}[{n}]"
+        ck = _mapping(p, ck)
+        _no_unknown(p, ck, motion.CAMERA_FIELDS, "a camera key")
+        if "at" not in ck:
+            raise SpecError(f"{p}: needs at")
+        key: dict[str, Any] = {"at": _number(f"{p}.at", ck["at"], 0, MAX_CUE_SECONDS),
+                               "seconds": _number(f"{p}.seconds", ck.get("seconds", 0.8), *MOTION_CAMERA_SECONDS),
+                               "zoom": _number(f"{p}.zoom", ck.get("zoom", 1), *MOTION_ZOOM),
+                               "focus": _focus(f"{p}.focus", ck.get("focus", [0.5, 0.5])),
+                               "easing": _choice(f"{p}.easing", ck.get("easing", "in_out"), anim.EASING_NAMES)}
+        if "vfocus" in ck:
+            key["vfocus"] = _focus(f"{p}.vfocus", ck["vfocus"])
+        if key["at"] < prev_end - 1e-9:
+            raise SpecError(f"{p}.at: starts at {round(key['at'], 3)}s, before the camera move before it ends "
+                            f"({round(prev_end, 3)}s)")
+        prev_end = key["at"] + key["seconds"]
+        out.append(key)
+    return out
+
+
+def _motion_flash(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
+    appears: dict[str, float] = {}   # `elements` is checked first; `at` is there only when the element gave one
+    ids: set[str] = set()
+    todo = list(sc["elements"])
+    while todo:   # group children too
+        e = todo.pop()
+        if "id" in e:
+            ids.add(e["id"])
+            if "at" in e:
+                appears[e["id"]] = e["at"]
+        todo.extend(e.get("children", []))
+    out = []
+    for n, f in enumerate(_list(path, v, 0, MAX_FLASH, "MAX_FLASH")):
+        p = f"{path}[{n}]"
+        f = _mapping(p, f)
+        _no_unknown(p, f, motion.FLASH_FIELDS, "a motion flash")
+        if "node" not in f:
+            raise SpecError(f"{p}: needs node")
+        flash = dict(f)
+        ref = _node_id(f"{p}.node", f["node"])
+        if ref not in ids:
+            raise SpecError(f"{p}.node: unknown element {ref!r}")
+        flash["node"] = ref
+        flash["at"] = _number(f"{p}.at", f.get("at", 0), 0, MAX_CUE_SECONDS)
+        if flash["at"] < appears.get(ref, 0):
+            raise SpecError(f"{p}.at: element {ref!r} appears at {round(appears[ref], 3)}s, so it cannot flash at "
+                            f"{round(flash['at'], 3)}s")
+        if "text" in f:
+            flash["text"] = _text(f"{p}.text", f["text"])
+        if "color" in f:
+            flash["color"] = _choice(f"{p}.color", f["color"], COLOR_NAMES)
+        out.append(flash)
+    return out
+
+
 # One checker per scene field (common and per type). Each returns the normalised value.
+MAX_SCENE_CUES = 40
+SFX_FIELDS = ("at", "sound", "gain", "seconds", "pitch")
+
+
+def _sfx(path: str, v: Any, sc: dict[str, Any], env: _Env) -> list[dict[str, Any]]:
+    """A scene's sound cues: [{at: seconds from the scene start, sound, gain 0-2, seconds (riser, whoosh, swell, hush),
+    pitch in semitones}]. Played only by the `mix:` render path."""
+    from .sfx import DEFAULT_SECONDS, SOUNDS
+    out = []
+    for n, raw in enumerate(_list(path, v, 1, MAX_SCENE_CUES, "MAX_SCENE_CUES")):
+        where = f"{path}[{n}]"
+        cue = dict(_mapping(where, raw))
+        _no_unknown(where, cue, SFX_FIELDS, "a sound cue")
+        if "at" not in cue or "sound" not in cue:
+            raise SpecError(f"{where} needs `at` and `sound`")
+        cue["at"] = _number(f"{where}.at", cue["at"], 0, env.max_seconds)
+        cue["sound"] = _choice(f"{where}.sound", cue["sound"], SOUNDS)
+        if "gain" in cue:
+            cue["gain"] = _number(f"{where}.gain", cue["gain"], 0, 2)
+        if "seconds" in cue:
+            if cue["sound"] not in DEFAULT_SECONDS:
+                raise SpecError(f"{where}.seconds: only {', '.join(sorted(DEFAULT_SECONDS))} take a length")
+            cue["seconds"] = _number(f"{where}.seconds", cue["seconds"], 0.05, 10)
+        if "pitch" in cue:
+            cue["pitch"] = _number(f"{where}.pitch", cue["pitch"], -24, 24)
+        out.append(cue)
+    return out
+
+
 FIELD_CHECKS: dict[str, Checker] = {
+    "sfx": _sfx,
     "type": _scene_type,
     "seconds": _seconds,
     "caption": _text_field,
@@ -1026,6 +1455,9 @@ FIELD_CHECKS: dict[str, Checker] = {
     "cells": _grid_cells,
     "seed": _grid_seed,
     "kind": lambda path, v, sc, env: _choice(path, v, LINEART_KINDS),
+    "elements": _elements,
+    "quality": _quality,
+    "camera": _camera,
 }
 # Fields whose meaning depends on the scene type get their own checker; it wins over FIELD_CHECKS.
 TYPE_CHECKS: dict[str, dict[str, Checker]] = {
@@ -1035,12 +1467,13 @@ TYPE_CHECKS: dict[str, dict[str, Checker]] = {
     "tree": {"nodes": _tree_nodes},
     "timeline": {"count": _bool_field},
     "grid": {"steps": _grid_steps},
+    "motion": {"flash": _motion_flash},
 }
 # Fields whose checker reads another field of the same scene, so that one is checked first.
 _CHECKED_FIRST = ("code", "nodes")
 _CHECKED_FIRST_BY_TYPE = {"table": ("columns", "rows"), "array": ("items", "stagger"),
                            "meter": ("shape", "capacity", "start"), "timeline": ("axis",),
-                           "grid": ("cells", "seconds", "seed")}
+                           "grid": ("cells", "seconds", "seed"), "motion": ("stagger", "elements")}
 
 
 def _scene(i: int, raw: Any, env: _Env) -> dict[str, Any]:
@@ -1226,6 +1659,25 @@ def _meta(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any]:
     return meta
 
 
+MIX_KEYS = ("loudness", "true_peak", "voice_chain", "music_db", "sfx_db")
+
+
+def _mix(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any] | None:
+    """`mix:` turns on the mastered audio path (voice chain, scene sound cues, music drops, loudness target)."""
+    if v is None:
+        return None
+    if v is True:
+        v = {}
+    mix = dict(_mapping(path, v))
+    _no_unknown(path, mix, MIX_KEYS, "mix")
+    for key, lo, hi in (("loudness", -30, -6), ("true_peak", -6, 0), ("music_db", -24, 12), ("sfx_db", -24, 12)):
+        if key in mix:
+            mix[key] = _number(f"{path}.{key}", mix[key], lo, hi)
+    if "voice_chain" in mix:
+        mix["voice_chain"] = _bool(f"{path}.voice_chain", mix["voice_chain"])
+    return mix
+
+
 def _poster(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any] | None:
     if v is None:
         return None
@@ -1345,6 +1797,7 @@ TOP_CHECKS: dict[str, Checker] = {
     "subtitles": _subtitles_top,
     "scenes": _scenes,
     "poster": _poster,
+    "mix": _mix,
 }
 _FORBIDDEN_IN_SPEC = {"allow_paths", "allow_private_hosts", "chromium_path", "font_dir", "voice_server"}
 
@@ -1380,4 +1833,27 @@ def validate(raw: Any, config: Config | None = None, base_dir: Path | None = Non
     for key, check in TOP_CHECKS.items():
         if key in spec:
             spec[key] = check(key, spec[key], spec, env)
+    _check_sound(spec)
     return spec
+
+
+MAX_MIX_SECONDS = 600   # the same limit as mixdown.MAX_MIX_SECONDS (tested to agree)
+
+
+def _check_sound(spec: dict[str, Any]) -> None:
+    """Rules that span scenes: `sfx` cues need `mix:`, the whole spec has at most MAX_CUES of them, and the mix path
+    is for videos of at most MAX_MIX_SECONDS (as planned here; render checks the final length again)."""
+    from .sfx import MAX_CUES
+    scenes = spec.get("scenes") or []
+    with_cues = [i for i, sc in enumerate(scenes) if sc.get("sfx")]
+    if with_cues and spec.get("mix") is None:
+        raise SpecError(f"scenes[{with_cues[0]}].sfx: sound cues play only with `mix:` at the top of the spec "
+                        "(add `mix: true`)")
+    total = sum(len(scenes[i]["sfx"]) for i in with_cues)
+    if total > MAX_CUES:
+        raise SpecError(f"the spec has {total} sound cues; the limit is {MAX_CUES} (MAX_CUES)")
+    if spec.get("mix") is not None:
+        seconds = sum(float(sc.get("seconds", 0)) for sc in scenes)
+        if seconds > MAX_MIX_SECONDS:
+            raise SpecError(f"mix: the video is {seconds:.0f}s; the mix path handles at most {MAX_MIX_SECONDS}s "
+                            "(MAX_MIX_SECONDS)")

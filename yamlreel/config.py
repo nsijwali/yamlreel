@@ -27,7 +27,7 @@ MAX_CONFIG_BYTES = 256 * 1024
 CONFIG_FILENAME = "yamlreel.config.yaml"
 
 # keys any config layer (and the spec) may set
-SHARED_KEYS = {"theme", "themes", "formats", "watermark", "music", "meta", "poster", "fps", "output_dir", "limits", "voiceover", "transition", "subtitles"}
+SHARED_KEYS = {"theme", "themes", "formats", "watermark", "music", "meta", "poster", "fps", "output_dir", "limits", "voiceover", "transition", "subtitles", "mix"}
 # keys only the user config / CLI may set (they widen access)
 TRUSTED_KEYS = {"allow_paths", "allow_private_hosts", "chromium_path", "font_dir", "voice_server"}
 

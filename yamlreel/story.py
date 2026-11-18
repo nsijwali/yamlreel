@@ -37,7 +37,7 @@ MAX_ANSWERS = 4
 MAX_EVENTS = 8                 # timed cues in one step
 MAX_EVENT_AT = 60              # seconds from the scene's start
 EVENT_HOLD = 1.5               # seconds the scene lasts after its last event
-EVENT_SHOWS = ("diagram", "meter", "array")
+EVENT_SHOWS = ("diagram", "meter", "array", "motion")
 METER_LEVELS = (4, 10)         # the placeholder's drain and refill, which events alternate between
 TODO = "TODO"
 
@@ -45,9 +45,11 @@ OUTLINE_KEYS = ("topic", "hook", "problem", "steps", "when_to_use", "question", 
 STEP_KEYS = ("name", "say", "show", "events")
 EVENT_KEYS = ("at", "text")     # the placeholder form: the generator invents the cue
 # The pass-through form: `at`, exactly one action key, and the optional fields of the scene's own step.
-EVENT_ACTIONS: dict[str, tuple[str, ...]] = {"array": ARRAY_ACTIONS, "meter": ("level",), "diagram": ("flash",)}
+EVENT_ACTIONS: dict[str, tuple[str, ...]] = {"array": ARRAY_ACTIONS, "meter": ("level",), "diagram": ("flash",),
+                                             "motion": ("flash",)}
 EVENT_EXTRAS: dict[str, tuple[str, ...]] = {"array": ("text", "color"), "meter": ("seconds", "text", "color"),
-                                            "diagram": ("text", "color")}
+                                            "diagram": ("text", "color"), "motion": ("text", "color")}
+FLASH_SHOWS = ("diagram", "motion")    # the shows whose events flash one of the placeholder's named parts
 DEFAULT_SHOW = "bullets"
 
 
@@ -74,6 +76,8 @@ PLACEHOLDERS: dict[str, dict[str, Any]] = {
                        {"id": "b", "label": TODO, "parent": "root"}]},
     "timeline": {"axis": {"from": 0, "to": 10, "ticks": 5}, "events": [{"x": 2, "at": 0.6}, {"x": 7, "at": 1.2}]},
     "grid": {"cells": ["#.#", ".#.", "#.#"]},
+    "motion": {"elements": [{"id": "a", "kind": "rect", "w": 760, "h": 150, "y": 0.5},
+                            {"id": "t", "kind": "text", "text": f"{TODO}: the label", "size": 54, "y": 0.5}]},
 }
 
 
@@ -102,6 +106,26 @@ def _mapping(path: str, v: Any, allowed: tuple[str, ...], what: str) -> dict[str
 
 def _event_keys(show: str) -> tuple[str, ...]:
     return ("at", *EVENT_ACTIONS[show], *EVENT_EXTRAS[show])
+
+
+def _flash_parts(show: str) -> dict[str, float]:
+    """The named parts of a show's placeholder a flash can hit, with the time each one appears."""
+    key = "nodes" if show == "diagram" else "elements"
+    return {n_["id"]: n_.get("at", 0) for n_ in PLACEHOLDERS[show][key]}
+
+
+def _check_flash(where: str, show: str, ev: dict[str, Any], at: float) -> None:
+    appears = _flash_parts(show)
+    noun, what = ("node", "diagram") if show == "diagram" else ("element", "motion scene")
+    if not isinstance(ev["flash"], str) or ev["flash"] not in appears:
+        raise StoryError(f"{where}.flash: unknown {noun} {ev['flash']!r}; the generated {what} has: "
+                         f"{', '.join(appears)}")
+    if at < appears[ev["flash"]]:
+        raise StoryError(f"{where}.at: {noun} {ev['flash']!r} of the generated {what} appears at "
+                         f"{appears[ev['flash']]}s, so it cannot flash at {at}s")
+    if "text" not in ev:
+        raise StoryError(f"{where} needs 'text'")
+    _text(f"{where}.text", ev["text"], MAX_CELL_CHARS)
 
 
 def _events(path: str, raw: Any, show: str = "meter") -> list[dict[str, Any]]:
@@ -142,17 +166,8 @@ def _events(path: str, raw: Any, show: str = "meter") -> list[dict[str, Any]]:
                 raise StoryError(f"{where} needs 'text'" + (f", or one of {', '.join(actions)}" if actions else ""))
             out.append({"at": at, "text": _text(f"{where}.text", ev["text"], MAX_CELL_CHARS)})
             continue
-        if show == "diagram":
-            appears = {n_["id"]: n_.get("at", 0) for n_ in PLACEHOLDERS["diagram"]["nodes"]}
-            if not isinstance(ev["flash"], str) or ev["flash"] not in appears:
-                raise StoryError(f"{where}.flash: unknown node {ev['flash']!r}; the generated diagram has: "
-                                 f"{', '.join(appears)}")
-            if at < appears[ev["flash"]]:
-                raise StoryError(f"{where}.at: node {ev['flash']!r} of the generated diagram appears at "
-                                 f"{appears[ev['flash']]}s, so it cannot flash at {at}s")
-            if "text" not in ev:
-                raise StoryError(f"{where} needs 'text'")
-            _text(f"{where}.text", ev["text"], MAX_CELL_CHARS)
+        if show in FLASH_SHOWS:
+            _check_flash(where, show, ev, at)
         out.append(dict(ev))
     if actions and out and 0 < sum(1 for e in out if any(a in e for a in actions)) < len(out):
         raise StoryError(f"{path}: use one form per step, either {{at, text}} events or events with an action key "
@@ -188,7 +203,8 @@ def parse_outline(raw: Any) -> dict[str, Any]:
             raise StoryError(f"{path}.show must be one of {', '.join(PLACEHOLDERS)}")
         events = _events(f"{path}.events", st.get("events"), show if isinstance(show, str) else "")
         if events and show not in EVENT_SHOWS:
-            raise StoryError(f"{path}.events: events work with show: diagram, meter or array; this step shows {show}")
+            raise StoryError(f"{path}.events: events work with show: {', '.join(EVENT_SHOWS[:-1])} or {EVENT_SHOWS[-1]}; "
+                             f"this step shows {show}")
         out["steps"].append({"name": _text(f"{path}.name", st["name"], MAX_NAME),
                              "say": _text(f"{path}.say", st["say"], MAX_LINE) if st.get("say") is not None else "",
                              "show": show, "events": events})
@@ -264,13 +280,13 @@ def _apply_events(sc: dict[str, Any], kind: str, events: list[dict[str, Any]]) -
     for n, ev in enumerate(events):
         if any(a in ev for a in EVENT_ACTIONS[kind]):      # pass-through: the author's own step fields
             cues.append(dict(ev))
-        elif kind == "diagram":
+        elif kind in FLASH_SHOWS:
             cues.append({"node": "a", **ev})
         elif kind == "meter":
             cues.append({"at": ev["at"], "level": METER_LEVELS[n % 2], "text": ev["text"]})
         else:
             cues.append({"at": ev["at"], "mark": [n % 3], "text": ev["text"]})
-    if kind == "diagram":
+    if kind in FLASH_SHOWS:
         sc["flash"] = [{"node": c.pop("flash"), **c} if "flash" in c else c for c in cues]
     else:
         sc["steps"] = cues

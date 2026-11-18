@@ -8,7 +8,7 @@ from typing import Any, Callable, ClassVar
 from PIL import Image, ImageDraw
 
 from .textkit import TextBlock, blit, ease_out, make_block
-from .theme import Theme
+from .theme import Theme, use_faces
 
 
 @dataclass
@@ -23,6 +23,9 @@ class Ctx:
     chromium: str | None = None
     warnings: list[str] = field(default_factory=list)
     _bg: Image.Image | None = None
+
+    def __post_init__(self) -> None:
+        use_faces(self.theme.faces)   # the theme's font faces (none for the classic themes)
 
     @property
     def vertical(self) -> bool:
@@ -55,6 +58,8 @@ class Ctx:
             self.warnings.append(msg)
 
     def background(self) -> Image.Image:
+        if self._bg is None and self.theme.bg2 is not None:
+            self._bg = studio_background(self.theme, self.W, self.H)
         if self._bg is None:
             t, W, H = self.theme, self.W, self.H
             # soft radial vignette: lighter centre, darker edges
@@ -84,6 +89,53 @@ class Ctx:
     @property
     def body(self) -> str:
         return self.theme.display
+
+
+def studio_background(t: Theme, W: int, H: int) -> Image.Image:
+    """The gradient background of a theme with `bg2`: `bg` at the top easing into `bg2` at the bottom, a soft light
+    pool of `glow` behind the upper middle (where the content sits), a vignette, and a fixed ordered dither of under
+    one level so the gradient does not band once it is encoded. Built once per render context."""
+    import numpy as np
+    assert t.bg2 is not None
+    yy = (np.arange(H, dtype=np.float32) / max(1, H - 1))[:, None]
+    xx = (np.arange(W, dtype=np.float32) / max(1, W - 1))[None, :]
+    k = yy * yy * (3 - 2 * yy)                                     # smoothstep top -> bottom
+    top, bottom = np.array(t.bg, np.float32), np.array(t.bg2, np.float32)
+    img = top[None, None, :] * (1 - k[..., None]) + bottom[None, None, :] * k[..., None]
+    if t.glow is not None:
+        cy = 0.36 if H > W else 0.42
+        d2 = ((xx - 0.5) / 0.75) ** 2 + ((yy - cy) / (0.42 if H > W else 0.6)) ** 2
+        pool = np.exp(-d2 * 2.2)[..., None]
+        img = img + (np.array(t.glow, np.float32) - top)[None, None, :] * pool * 0.55
+    r2 = ((xx - 0.5) / 0.62) ** 2 + ((yy - 0.45) / 0.62) ** 2
+    img = img * np.clip(1.0 - 0.22 * r2, 0.6, 1.0)[..., None]
+    bayer = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], np.float32) / 16 - 0.47
+    img = img + np.tile(bayer, (H // 4 + 1, W // 4 + 1))[:H, :W, None]
+    return Image.fromarray(np.clip(img + 0.5, 0, 255).astype("uint8"), "RGB")
+
+
+SS = 2  # diagram supersampling
+_SS_MARGIN = 16  # layer pixels kept around the drawn area: more than the reach of the LANCZOS filter (3 * factor, factor <= 5)
+
+
+def downsample(layer: Image.Image, factor: int = SS) -> tuple[Image.Image, tuple[int, int]] | None:
+    """The drawn part of a supersampled RGBA layer at 1x, and where to paste it: the same pixels as
+    `layer.resize(1/factor, LANCZOS)`, in a fraction of the time, because only the area that has ink is resized.
+    None for an empty layer. To match the whole-layer resize exactly, the crop sits on pixel bounds that are
+    multiples of `factor` with a margin wider than the filter, and the two passes run in Pillow's order for a full
+    frame (across, then down); left to itself Pillow picks the order by the shape of the image, and the other
+    order rounds differently."""
+    box = layer.getbbox()
+    if box is None:
+        return None
+    x0 = max(0, (box[0] - _SS_MARGIN) // factor * factor)
+    y0 = max(0, (box[1] - _SS_MARGIN) // factor * factor)
+    x1 = min(layer.width, -(-(box[2] + _SS_MARGIN) // factor) * factor)
+    y1 = min(layer.height, -(-(box[3] + _SS_MARGIN) // factor) * factor)
+    part = layer.crop((x0, y0, x1, y1)).convert("RGBa")   # premultiplied, as Image.resize does for RGBA
+    w, h = part.width // factor, part.height // factor
+    small = part.resize((w, part.height), Image.LANCZOS).resize((w, h), Image.LANCZOS)
+    return small.convert("RGBA"), (x0 // factor, y0 // factor)
 
 
 def _appear(t: float, start: float, dur: float = 0.5) -> float:
@@ -134,7 +186,7 @@ class Scene:
     # with what the constructors actually read.
     COMMON_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"type", "seconds", "caption", "narration", "narration_audio", "transition", "narration_words", "subtitles",
-         "keywords", "step", "energy"})
+         "keywords", "step", "energy", "sfx"})
     FIELDS: ClassVar[frozenset[str]] = frozenset()
     kicker: TextBlock | None = None    # scenes that take a `kicker` set these when they have one
     kicker_box: tuple[float, float, float, float] | None = None

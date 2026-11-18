@@ -1,0 +1,70 @@
+# Motion scene demo (S1): text, rect and circle elements with enter/emphasis/exit presets, a few `moves`, a flash and
+# kinetic type. Scene 0 is a diagram for comparison, so `--profile` shows motion and diagram ms/frame in one run.
+# Render:   yamlreel render examples/motion-s1-demo.yaml --out out --preview --no-voice --music none --profile
+# One scene: add --only 1 (the input -> action -> result beat), --only 2 (kinetic type) or --only 3 (a held scene).
+# Quality: `quality: draft` (fast, aliased shapes), `standard` (default) or `high` on a motion scene.
+meta:
+  title: Motion layer demo
+  tags: [motion, demo]
+theme: midnight
+formats: [vertical]
+transition: {type: cut}
+scenes:
+  - type: diagram
+    title: A cache in front of a database
+    seconds: 6
+    nodes:
+      - {id: app, label: App, x: 0.5, y: 0.25, at: 0.4}
+      - {id: cache, label: Cache, kind: cache, x: 0.3, y: 0.55, at: 1.0}
+      - {id: db, label: Database, kind: db, x: 0.7, y: 0.55, at: 1.6}
+    edges:
+      - {from: app, to: cache, at: 1.6}
+      - {from: app, to: db, at: 2.0, dashed: true}
+    flash:
+      - {node: cache, at: 3.4, text: hit}
+
+  - type: motion                       # input -> action -> result
+    title: A cache hit
+    seconds: 6
+    stagger: 0.5
+    elements:
+      - {id: input, kind: rect, w: 760, h: 150, y: 0.24, enter: slide-up}
+      - {kind: text, text: "GET /user/42", font: mono, size: 54, y: 0.24, at: 0.35, enter: slide-up}
+      - {kind: text, text: input, size: 30, color: muted, y: 0.16, at: 0.6}
+      - {id: cache, kind: circle, r: 110, fill: card, stroke: accent2, stroke_width: 5, y: 0.48, at: 1.0, enter: pop}
+      - {kind: text, text: cache, size: 44, y: 0.48, at: 1.0, enter: pop}
+      - {kind: circle, r: 16, fill: fg, y: 0.31, at: 1.6, end: 2.7,
+         moves: [{at: 2.0, seconds: 0.7, y: 0.40}]}
+      - {kind: text, text: action, size: 30, color: muted, y: 0.37, x: 0.82, at: 1.4}
+      - {id: result, kind: rect, w: 640, h: 140, stroke: accent, y: 0.70, at: 2.9, enter: pop,
+         emphasis: {type: pulse, at: 3.7, repeat: 2}}
+      - {kind: text, text: "HIT in 0.3 ms", size: 56, color: accent, y: 0.70, at: 2.9, enter: pop,
+         emphasis: {type: pulse, at: 3.7, repeat: 2}}
+      - {kind: text, text: result, size: 30, color: muted, y: 0.62, x: 0.82, at: 3.1}
+      - {kind: rect, w: 420, h: 10, radius: 5, fill: accent, stroke: none, y: 0.80, at: 3.4, enter: slide-left}
+      - {kind: circle, r: 30, fill: none, stroke: accent, stroke_width: 6, x: 0.15, y: 0.9, at: 0.5, enter: draw}
+    flash:
+      - {node: cache, at: 2.7, text: found, color: accent}
+
+  - type: motion                       # kinetic type
+    seconds: 6
+    elements:
+      - {kind: text, text: "Stop guessing.", size: 110, y: 0.24, split: words, stagger: 0.12, enter: pop}
+      - {kind: text, text: "Measure every frame, then fix the slow one.", size: 70, y: 0.46, at: 1.1, split: words,
+         enter: slide-up}
+      - {kind: text, text: "Then measure again.", size: 90, color: accent, y: 0.66, at: 2.6, split: words,
+         stagger: 0.1, enter: pop, emphasis: {type: pulse, at: 3.8}}
+      - {kind: rect, w: 420, h: 10, radius: 5, fill: accent, stroke: none, y: 0.78, at: 2.2, enter: pop,
+         end: 5.2, exit: fade-out}
+
+  - type: motion                       # everything is at rest after about one second
+    title: Held scene
+    seconds: 6
+    stagger: 0.15
+    elements:
+      - {kind: rect, w: 860, h: 190, y: 0.28, at: 0.35, enter: slide-left}
+      - {kind: text, text: Read replicas, size: 52, y: 0.28, at: 0.35, enter: slide-left}
+      - {kind: rect, w: 860, h: 190, y: 0.45, at: 0.5, enter: slide-left}
+      - {kind: text, text: A cache in front, size: 52, y: 0.45, at: 0.5, enter: slide-left}
+      - {kind: rect, w: 860, h: 190, stroke: accent, y: 0.62, at: 0.65, enter: slide-left}
+      - {kind: text, text: Precomputed views, size: 52, color: accent, y: 0.62, at: 0.65, enter: slide-left}

@@ -25,6 +25,10 @@ class Theme:
     line: Color
     display: str  # font family for headings: "serif" or "sans"
     frame: bool  # thin inset border
+    # Optional studio look (all None in the classic themes, which keeps their frames byte-identical):
+    bg2: Color | None = None   # the background is a vertical gradient from `bg` (top) to `bg2` (bottom) with a vignette
+    glow: Color | None = None  # a soft light pool behind the upper middle of the frame, in this colour
+    faces: str | None = None   # a FACE_SETS name: the sans/mono fonts are drawn with these faces when installed
 
 
 THEMES: dict[str, Theme] = {
@@ -40,7 +44,30 @@ THEMES: dict[str, Theme] = {
     # Cream, ink and burnt orange; every other colour is a blend of those three.
     "editorial": Theme("editorial", (243, 238, 227), (17, 17, 17), (103, 101, 97), (217, 84, 30),
                        (62, 61, 59), (249, 246, 238), (193, 189, 181), "serif", True),
+    # Deep indigo motion-graphics look: gradient background with a light pool, electric cyan for the healthy state and
+    # the main accent, a warm red (accent2) reserved for errors and "down", Avenir Next where it is installed.
+    "studio": Theme("studio", (12, 14, 30), (240, 243, 250), (139, 148, 178), (72, 214, 255),
+                    (255, 77, 94), (24, 28, 52), (52, 60, 98), "sans", False,
+                    bg2=(5, 6, 14), glow=(40, 52, 120), faces="avenir"),
 }
+
+# Font faces a theme can ask for: a logical font kind -> (file, index in a .ttc). A kind missing here, or a face that is
+# not installed, falls back to the DejaVu file of that kind, so a theme with faces still renders on any machine.
+FACE_SETS: dict[str, dict[str, tuple[str, int]]] = {
+    "avenir": {"sans": ("Avenir Next.ttc", 5), "sans_bold": ("Avenir Next.ttc", 0),
+               "serif_bold": ("Avenir Next.ttc", 0), "serif": ("Avenir Next.ttc", 5),
+               "mono": ("Menlo.ttc", 0), "mono_bold": ("Menlo.ttc", 1)},
+}
+_FACE_DIRS = ["/System/Library/Fonts", "/System/Library/Fonts/Supplemental", "/Library/Fonts"]
+_active_faces: dict[str, tuple[str, int]] = {}
+
+
+def use_faces(name: str | None) -> None:
+    """Make `font()` draw with a FACE_SETS entry (None: the DejaVu defaults). The render context calls this for its
+    theme, so one process can render themes with and without faces one after the other."""
+    _active_faces.clear()
+    if name:
+        _active_faces.update(FACE_SETS[name])
 
 _FONT_FILES = {
     "serif": "DejaVuSerif.ttf",
@@ -91,6 +118,7 @@ def set_font_dirs(dirs: list[str]) -> None:
     """Extra directories searched before the system ones (from config)."""
     _EXTRA_FONT_DIRS[:] = [d for d in dirs if d]
     _load.cache_clear()
+    _load_face.cache_clear()
 
 
 def parse_color(value: object, where: str) -> Color:
@@ -129,7 +157,8 @@ def get_theme(name: str, custom: dict | None = None) -> Theme:
             display = d.get("display", base.display)
             if display not in ("serif", "sans"):
                 raise ValueError(f"themes.{n}.display must be serif or sans")
-            return Theme(n, display=display, frame=bool(d.get("frame", base.frame)), **fields)
+            return Theme(n, display=display, frame=bool(d.get("frame", base.frame)), bg2=base.bg2, glow=base.glow,
+                         faces=base.faces, **fields)
         if n in THEMES:
             return THEMES[n]
         raise ValueError(f"unknown theme {describe_value(n)}; choose from {', '.join([*THEMES, *custom])}")
@@ -163,9 +192,26 @@ def has_cjk(text: str) -> bool:
     return any(ord(ch) >= 0x2E80 for ch in text)
 
 
+@lru_cache(maxsize=256)
+def _load_face(file: str, index: int, size: int) -> ImageFont.FreeTypeFont | None:
+    for d in [*_EXTRA_FONT_DIRS, *_FACE_DIRS, *_user_font_dirs()]:
+        p = Path(d) / file
+        if p.exists():
+            try:
+                return ImageFont.truetype(str(p), size, index=index)
+            except OSError:
+                return None
+    return None
+
+
 def font(kind: str, size: float, text: str = "") -> ImageFont.FreeTypeFont:
     """Return a font; CJK text falls back to a CJK face when one is installed."""
     size = max(8, int(round(size)))
     if has_cjk(text) and _find(_FONT_FILES["cjk"]):
         return _load("cjk", size)
+    face = _active_faces.get(kind)
+    if face is not None:
+        f = _load_face(face[0], face[1], size)
+        if f is not None:
+            return f
     return _load(kind, size)

@@ -385,6 +385,30 @@ EVENTS = [{"at": 1.0, "text": "Burst arrives"}, {"at": 3.5, "text": "Queue full"
           {"at": 6, "text": "Again"}]
 
 
+def test_motion_events_become_flash_cues_and_round_trip_through_load_spec(tmp_path):
+    sc = _step_scene("motion", [{"at": 1.0, "text": "Burst arrives"}, {"at": 3.5, "text": "Queue full"}])
+    assert sc["type"] == "motion" and sc["title"] == "Queue"
+    assert [e["id"] for e in sc["elements"]] == ["a", "t"]
+    assert sc["flash"] == [{"node": "a", "at": 1.0, "text": "Burst arrives"}, {"node": "a", "at": 3.5, "text": "Queue full"}]
+    given = _step_scene("motion", [{"at": 1, "flash": "t", "text": "Hit", "color": "accent"}, {"at": 2, "flash": "a", "text": "Back"}])
+    assert given["flash"] == [{"node": "t", "at": 1, "text": "Hit", "color": "accent"}, {"node": "a", "at": 2, "text": "Back"}]
+    outline = _outline("motion", [{"at": 1, "flash": "t", "text": "Hit"}])
+    (tmp_path / "m.yaml").write_text(story.generate(story.parse_outline(outline)), encoding="utf-8")
+    loaded = load_spec(tmp_path / "m.yaml")
+    assert any(s["type"] == "motion" and s["flash"][0]["node"] == "t" for s in loaded["scenes"])
+    _bad("motion", [{"at": 1, "flash": "nope", "text": "x"}],
+         r"steps\[0\]\.events\[0\]\.flash: unknown element 'nope'; the generated motion scene has: a, t")
+    # the placeholder elements have no explicit time, so an early cue is valid (the scene times them itself)
+    early = _outline("motion", [{"at": 0.1, "flash": "a", "text": "x"}])
+    (tmp_path / "e.yaml").write_text(story.generate(story.parse_outline(early)), encoding="utf-8")
+    assert next(s for s in load_spec(tmp_path / "e.yaml")["scenes"] if s["type"] == "motion")["flash"][0]["at"] == 0.1
+    for events in ([{"at": 0.1, "text": "Burst"}], [{"at": 0, "flash": "t", "text": "x"}]):
+        load_spec_text = story.generate(story.parse_outline(_outline("motion", events)))
+        (tmp_path / "e2.yaml").write_text(load_spec_text, encoding="utf-8")
+        load_spec(tmp_path / "e2.yaml")
+    _bad("motion", [{"at": 1, "flash": "a"}], r"needs 'text'")
+
+
 def test_events_become_cues_for_diagram_meter_and_array(tmp_path):
     d = _step_scene("diagram", EVENTS[:2])
     assert d["flash"] == [{"node": "a", "at": 1.0, "text": "Burst arrives"}, {"node": "a", "at": 3.5, "text": "Queue full"}]
@@ -403,7 +427,7 @@ def test_events_become_cues_for_diagram_meter_and_array(tmp_path):
 
 @pytest.mark.parametrize("show", ["bullets", "table", "timeline"])
 def test_events_on_other_scene_types_are_an_error(show):
-    with pytest.raises(story.StoryError, match=rf"steps\[0\]\.events: events work with show: diagram, meter or array; "
+    with pytest.raises(story.StoryError, match=rf"steps\[0\]\.events: events work with show: diagram, meter, array or motion; "
                                                rf"this step shows {show}"):
         story.parse_outline(_outline(show, EVENTS[:1]))
     story.parse_outline(_outline(show, []))      # events: [] is the same as none
