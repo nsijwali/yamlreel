@@ -9,7 +9,8 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from .datascenes import ArrayScene, CtaScene, GridScene, MeterScene, TableScene, TimelineScene, TreeScene
 from .scenebase import SS, Ctx, Scene, _SS_MARGIN, _appear, downsample, kicker_shift, make_kicker  # noqa: F401  (SS, _SS_MARGIN and downsample are re-exported)
-from .shots import load_shot
+from .shotimage import ShotImage
+from .shots import load_shot, shot_path  # noqa: F401  (load_shot is re-exported)
 from .textkit import TextBlock, blit, ease_in_out, ease_out, lerp_color, make_block, split_count
 from .theme import Color, Theme, font
 
@@ -107,15 +108,16 @@ class ShotScene(Scene):
     def __init__(self, spec: dict[str, Any], ctx: Ctx):
         super().__init__(spec, ctx)
         opts = {k: spec[k] for k in CAPTURE_OPTS if k in spec}
-        self.img = load_shot(spec["source"], opts, ctx.workdir, ctx.base_dir, ctx.roots,
-                             ctx.allow_private_hosts, ctx.chromium)
+        # captured and checked now (errors name the scene); decoded only while frames need it (see shotimage.py)
+        self._shot = ShotImage(shot_path(spec["source"], opts, ctx.workdir, ctx.base_dir, ctx.roots,
+                                         ctx.allow_private_hosts, ctx.chromium), ctx.media)
         self.fit = spec.get("fit", "card" if ctx.W <= ctx.H else "cover")
         z = spec.get("zoom", [1.0, 1.0])
         self.z0, self.z1 = (z if isinstance(z, list) else [1.0, z])
         f0 = spec.get("focus", [0.5, 0.5])
         self.f0 = f0
         self.f1 = spec.get("focus_to", f0)
-        sw, sh = self.img.size
+        sw, sh = self._shot.size
         if self.fit == "card":
             maxw, maxh = ctx.W * (0.90 if ctx.vertical else 0.84), ctx.H * (0.56 if ctx.vertical else 0.74)
             s = min(maxw / sw, maxh / sh)
@@ -132,13 +134,22 @@ class ShotScene(Scene):
             self.pad = pad
             self.radius = r
 
+    @property
+    def img(self) -> Image.Image:
+        return self._shot.get()
+
+    def release(self) -> None:
+        super().release()
+        self._shot.drop()
+
     def frame(self, t: float) -> Image.Image:
         c = self.ctx
         p = ease_in_out(t / self.duration)
         z = self.z0 + (self.z1 - self.z0) * p
         fx = self.f0[0] + (self.f1[0] - self.f0[0]) * p
         fy = self.f0[1] + (self.f1[1] - self.f0[1]) * p
-        sw, sh = self.img.size
+        img = self.img
+        sw, sh = img.size
         if self.fit == "cover":
             s0 = max(c.W / sw, c.H / sh)
             vw, vh = c.W / (s0 * z), c.H / (s0 * z)
@@ -148,7 +159,7 @@ class ShotScene(Scene):
             out_size = (self.cw, self.ch)
         x0 = min(max(fx * sw - vw / 2, 0), sw - vw)
         y0 = min(max(fy * sh - vh / 2, 0), sh - vh)
-        view = self.img.resize(out_size, Image.BICUBIC, box=(x0, y0, x0 + vw, y0 + vh))
+        view = img.resize(out_size, Image.BICUBIC, box=(x0, y0, x0 + vw, y0 + vh))
         if self.fit == "cover":
             return view
         canvas = c.background()

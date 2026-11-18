@@ -7,6 +7,7 @@ from typing import Any, Callable, ClassVar
 
 from PIL import Image, ImageDraw
 
+from .mediabudget import MediaBudget
 from .textkit import TextBlock, blit, ease_out, make_block
 from .theme import Theme, use_faces
 
@@ -23,6 +24,7 @@ class Ctx:
     chromium: str | None = None
     warnings: list[str] = field(default_factory=list)
     browser_timeout: float = 180.0   # seconds a browser may take per frame (render: Runtime.deadlines.browser_frame)
+    media: MediaBudget = field(default_factory=MediaBudget)   # decoded pictures of all scenes together
     _bg: Image.Image | None = None
 
     def __post_init__(self) -> None:

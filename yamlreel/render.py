@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw
 
+from . import contactpages
 from . import music as music_mod
 from . import proclife
 from . import shorts as shorts_mod
@@ -336,21 +337,24 @@ def contact_sheet(tl: Timeline, path: Path, cols: int | None = None, tile_w: int
         tile_w = 480 if cols <= 4 else 320
     tile_h = int(tile_w * tl.ctx.H / tl.ctx.W)
     chosen = list(range(len(tl.scenes))) if scenes is None else scenes
-    n_tiles = len(chosen) * len(fracs)
     label_h = 24
-    sheet = Image.new("RGB", (cols * tile_w, ((n_tiles + cols - 1) // cols) * (tile_h + label_h)), (16, 16, 16))
-    d = ImageDraw.Draw(sheet)
+    tiles = [(i, frac) for i in chosen for frac in fracs]
+    # A sheet larger than contactpages.MAX_SHEET_PIXELS is split into pages of whole rows (path, path-p2, ...), each
+    # drawn and saved before the next, so no single huge image is ever allocated.
+    per_page = cols * contactpages.rows_per_page(cols * tile_w, tile_h + label_h, contactpages.MAX_SHEET_PIXELS)
     f = font("sans", 15)
-    n = 0
-    for i in chosen:
-        sc = tl.scenes[i]
-        for frac in fracs:
+    for k, first in enumerate(range(0, max(1, len(tiles)), per_page)):
+        page = tiles[first:first + per_page]
+        sheet = Image.new("RGB", (cols * tile_w, ((len(page) + cols - 1) // cols) * (tile_h + label_h)), (16, 16, 16))
+        d = ImageDraw.Draw(sheet)
+        for n, (i, frac) in enumerate(page):
+            sc = tl.scenes[i]
             t = tl.starts[i] + sc.duration * frac
             x, y = (n % cols) * tile_w, (n // cols) * (tile_h + label_h)
             sheet.paste(tl.frame_at(t).resize((tile_w, tile_h)), (x, y + label_h))
             d.text((x + 6, y + 4), f"{i}:{sc.spec['type']} {t:.1f}s", font=f, fill=(220, 220, 220))
-            n += 1
-    sheet.save(path)
+        sheet.save(contactpages.page_path(path, k))
+        del sheet, d
     return path
 
 
@@ -551,15 +555,17 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         work = Path(td)
         cache = out_dir / ".cache"
         cache.mkdir(parents=True, exist_ok=True)
+        # The spec limits were checked on load; check again as narration stretches the scenes (prepare_narration
+        # stops loading clips once they alone pass the limit) and after beat snapping has rounded them, and in case
+        # the caller never validated. Absolute limits always apply.
+        limits = spec.get("limits") or {}
+        limit = min(limits.get("max_seconds", HARD_LIMITS["max_seconds"]), HARD_LIMITS["max_seconds"])
         try:
-            clips = voice_mod.prepare_narration(spec, rt.voice, cache, lambda p: resolve_local(p, Path(spec.get("_dir", ".")), rt.roots))
+            clips = voice_mod.prepare_narration(spec, rt.voice, cache, lambda p: resolve_local(p, Path(spec.get("_dir", ".")), rt.roots),
+                                                max_seconds=limit)
         except (voice_mod.VoiceError, UnsafeInput) as e:
             raise RenderError(f"voiceover: {e}") from e
         t_voice = clock()
-        # The spec limits were checked on load; check again now that narration has stretched the scenes and beat
-        # snapping has rounded them, and in case the caller never validated. Absolute limits always apply.
-        limits = spec.get("limits") or {}
-        limit = min(limits.get("max_seconds", HARD_LIMITS["max_seconds"]), HARD_LIMITS["max_seconds"])
         try:
             words, sub_warnings = subs_mod.scene_words(
                 spec, clips, lambda p: resolve_local(p, Path(spec.get("_dir", ".")), rt.roots))
@@ -714,7 +720,13 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
         sheet = None
         if contact:
             fracs = contact_fracs(contact_frames)
-            sheet = stage.final(contact_sheet(tl, stage.path(f"contact{tag}.png"), fracs=fracs, scenes=only).name)
+            sheet_name = f"contact{tag}.png"
+            sheet = stage.final(contact_sheet(tl, stage.path(sheet_name), fracs=fracs, scenes=only).name)
+            made = contactpages.extra_pages(stage.dir, sheet_name)
+            for extra in made:
+                stage.path(extra.name)        # published with the first page
+            for old in contactpages.extra_pages(out, sheet_name)[len(made):]:
+                stage.remove(old.name)        # pages an earlier, longer sheet had
         try:
             stage.publish(last=video.name)   # the video last: a new video always comes with its new sidecars
         except PublishError as e:

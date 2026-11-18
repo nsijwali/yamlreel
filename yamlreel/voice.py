@@ -413,13 +413,15 @@ def scene_floors(spec: dict[str, Any], clips: dict[int, np.ndarray]) -> dict[int
 
 
 def prepare_narration(spec: dict[str, Any], server: VoiceServer | None, cache: Path,
-                      resolve_audio) -> dict[int, np.ndarray]:
+                      resolve_audio, max_seconds: float | None = None) -> dict[int, np.ndarray]:
     """Return {scene index: samples} for every scene with narration, and stretch scene lengths to fit.
 
-    `resolve_audio(path)` must confine `narration_audio` files to the allowed folders."""
+    `resolve_audio(path)` must confine `narration_audio` files to the allowed folders. With `max_seconds`, the
+    narration is checked as it grows: once the clips so far need more than that, the rest is not loaded."""
     vo = spec.get("voiceover") or {}
     gap = float(vo.get("gap", 0.5))
     clips: dict[int, np.ndarray] = {}
+    spoken = 0.0   # seconds the narrated scenes so far need at least
     session: _Session | None = None
     cache.mkdir(parents=True, exist_ok=True)
     for i, sc in enumerate(spec["scenes"]):
@@ -444,6 +446,10 @@ def prepare_narration(spec: dict[str, Any], server: VoiceServer | None, cache: P
         samples = process_clip(samples, vo)  # after the cache, so the cached audio stays raw
         clips[i] = samples
         sc["seconds"] = max(sc["seconds"], min_scene_seconds(samples, gap))
+        spoken += min_scene_seconds(samples, gap)   # a lower bound on the video: snapping never cuts speech
+        if max_seconds is not None and spoken > max_seconds:
+            raise VoiceError(f"the narration up to scene {i} already needs {spoken:.1f}s; the limit is "
+                             f"{max_seconds:g}s (limits.max_seconds), so the remaining clips were not loaded")
     return clips
 
 

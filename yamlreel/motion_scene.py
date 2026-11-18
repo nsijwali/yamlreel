@@ -26,6 +26,7 @@ from PIL import Image, ImageChops, ImageDraw
 from dataclasses import replace
 
 from . import anim, motion_image, motion_paths
+from .mediabudget import MediaBudgetError
 from .anim import Node, QState
 from .motion_camera import MAX_CAMERA_KEYS, CameraKey, Viewport, camera_at, max_zoom  # noqa: F401
 from .scenebase import _SS_MARGIN, Ctx, Scene, _appear, downsample
@@ -747,6 +748,10 @@ class MotionScene(Scene):
         if self._image_bytes > MAX_IMAGE_BYTES:
             raise CaptureError(f"{where}: the images of this scene need {self._image_bytes // 2**20} MB; the limit is "
                                f"{MAX_IMAGE_BYTES // 2**20} MB (MAX_IMAGE_BYTES)")
+        try:   # and against the render's budget for all scenes together (mediabudget.py)
+            self.ctx.media.pin(self, img.width * img.height * 4, where)
+        except MediaBudgetError as e:
+            raise CaptureError(str(e)) from e
 
     def _build_element(self, el: dict[str, Any], at: float, parent: tuple[Node | None, tuple[str, ...], int, int] | None
                        ) -> Node:
