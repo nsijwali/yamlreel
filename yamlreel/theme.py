@@ -217,8 +217,7 @@ def font(kind: str, size: float, text: str = "") -> ImageFont.FreeTypeFont:
     return _load(kind, size)
 
 
-# Looks kept in their own modules and registered into the tables above. Imported last because they import Theme from
-# this module.
+# Looks kept in their own modules (plain data, no import from here) and registered into the tables above.
 from .dusk_theme import register as _register_dusk  # noqa: E402
 
-_register_dusk(THEMES, FACE_SETS)
+_register_dusk(THEMES, FACE_SETS, Theme)

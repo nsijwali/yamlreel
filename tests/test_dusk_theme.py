@@ -1,15 +1,20 @@
 """The `dusk` theme (yamlreel/dusk_theme.py): registered as a built-in, its gradient, faces and fallbacks."""
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 
 from yamlreel import theme
-from yamlreel.dusk_theme import DUSK, DUSK_FACES
+from yamlreel.dusk_theme import DUSK_FACES
 from yamlreel.scenebase import Ctx, studio_background
 from yamlreel.scenes import build_scene
 from yamlreel.specs import SpecError, validate
-from yamlreel.theme import FACE_SETS, THEMES, font, get_theme, use_faces
+from yamlreel.theme import FACE_SETS, THEMES, Theme, font, get_theme, use_faces
+
+DUSK = THEMES["dusk"]
 
 
 @pytest.fixture(autouse=True)
@@ -25,12 +30,18 @@ def no_personal_config(tmp_path_factory, monkeypatch):
 
 
 def test_dusk_is_a_built_in_theme_with_the_lamp_accent():
-    assert THEMES["dusk"] is DUSK
+    assert isinstance(DUSK, Theme) and DUSK.name == "dusk"
     assert get_theme("dusk") is DUSK
     assert FACE_SETS["dusk"] is DUSK_FACES
     assert DUSK.bg == (0x0B, 0x10, 0x20) and DUSK.bg2 == (0x1A, 0x21, 0x47)
     assert DUSK.accent == (0xFF, 0xB3, 0x47)
     assert set(DUSK_FACES) <= set(theme._FONT_FILES)   # every face replaces a font kind the renderer asks for
+
+
+@pytest.mark.parametrize("first", ["yamlreel.dusk_theme", "yamlreel.theme"])
+def test_the_dusk_module_imports_in_any_order(first):
+    code = f"import {first}; from yamlreel.theme import THEMES; assert THEMES['dusk'].accent == (255, 179, 71)"
+    subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, timeout=60)
 
 
 def test_registering_dusk_leaves_the_other_themes_alone():
