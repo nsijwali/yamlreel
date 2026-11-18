@@ -25,6 +25,7 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 
+from . import ffmpegtools
 from .atomicfile import write_validated
 from .errorfmt import redact_text, redact_url
 from .voicewire import VoiceError, decode_audio, find_wav_b64 as _find_wav_b64, parse_json as _json, rpc_result  # noqa: F401  (VoiceError is re-exported)
@@ -308,8 +309,7 @@ def debreath(samples: np.ndarray, sr: int = SAMPLE_RATE) -> np.ndarray:
 
 def change_speed(samples: np.ndarray, speed: float) -> np.ndarray:
     """Play the clip `speed` times as fast without changing its pitch (ffmpeg `atempo`)."""
-    from . import render  # late: render imports this module
-    ffmpeg = render.ffmpeg_exe()
+    ffmpeg = ffmpegtools.ffmpeg_exe()
     if ffmpeg is None:
         raise VoiceError("voiceover.speed needs ffmpeg and none was found. Install it (macOS: brew install ffmpeg; "
                          "Debian/Ubuntu: sudo apt install ffmpeg) or run: pip install imageio-ffmpeg")

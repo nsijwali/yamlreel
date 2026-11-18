@@ -21,7 +21,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from . import proclife, shorts
+from . import ffmpegtools, proclife, shorts
 
 SR = 44100
 MAX_EVENTS = 500
@@ -40,8 +40,7 @@ class PolishError(ValueError):
 
 
 def _ffmpeg() -> str:
-    from .render import ffmpeg_exe
-    exe = ffmpeg_exe()
+    exe = ffmpegtools.ffmpeg_exe()
     if not exe:
         raise PolishError("ffmpeg was not found. Install it, or run: pip install 'yamlreel[ffmpeg]'")
     return exe
@@ -347,7 +346,7 @@ def load_events(path: Path, allow: list[Path] | None = None) -> list[Event]:
 
 
 def _decode(file: Path) -> np.ndarray:
-    from .render import AUDIO_FORMATS
+    from .ffmpegtools import AUDIO_FORMATS
     done = _run([_ffmpeg(), "-loglevel", "error", "-protocol_whitelist", "file", "-format_whitelist", AUDIO_FORMATS,
                  "-i", str(file), "-t", f"{MAX_FILE_SECONDS:g}", "-f", "f32le", "-ac", "1", "-ar", str(SR), "-"],
                 f"reading {file.name}")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import re
 import shutil
 import sys
@@ -19,7 +20,7 @@ from . import voice as voice_mod
 from . import voicecheck
 from .config import CONFIG_FILENAME, config_base, Config, ConfigError, load_config, user_config_path
 from .voice import VoiceError, VoiceServer
-from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, only_label, render, share_copy
+from .render import MAX_CONTACT_FRAMES, RenderError, Runtime, make_plan, only_label, render, share_copy
 from .proclife import Deadlines
 from .safety import UnsafeInput, resolve_local
 from .shots import CaptureError
@@ -207,10 +208,15 @@ def cmd_render(args: argparse.Namespace) -> int:
         raise SpecError(f"--contact-frames must be an integer between 1 and {MAX_CONTACT_FRAMES}")
     rt = _runtime(spec, cfg, args.music, no_voice=args.no_voice)
     results = {}
-    for fmt in formats:
-        print(f"rendering {fmt} ...", flush=True)
-        results[fmt] = render(spec, fmt, out_dir, fps=fps, scale=scale, music_override=args.music, contact=True, runtime=rt,
-                               n_formats=len(formats), contact_frames=args.contact_frames, only=only)
+    with contextlib.ExitStack() as stack:
+        plan = None   # narration, timing and audio tracks: made once, shared by every format
+        for fmt in formats:
+            print(f"rendering {fmt} ...", flush=True)
+            if plan is None:
+                plan = stack.enter_context(make_plan(spec, fps, out_dir, rt, len(formats), only, args.music))
+            results[fmt] = render(spec, fmt, out_dir, fps=fps, scale=scale, music_override=args.music, contact=True,
+                                  runtime=rt, n_formats=len(formats), contact_frames=args.contact_frames, only=only,
+                                  plan=plan)
     first = next(iter(results.values()))
     text, warns = share_copy(spec, first["full_seconds"], formats)
     if only is None:

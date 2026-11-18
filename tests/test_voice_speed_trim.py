@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 from fakes import _fake_voice_server
+from yamlreel import ffmpegtools
 from yamlreel import render as render_mod
 from yamlreel import voice as voice_mod
 from yamlreel.config import Config
@@ -76,7 +77,7 @@ def test_trim_handles_empty_clip():
 # --- speed ---------------------------------------------------------------------------------------------------
 
 def test_speed_one_is_identity_and_skips_ffmpeg(monkeypatch):
-    monkeypatch.setattr(render_mod, "ffmpeg_exe", lambda: pytest.fail("ffmpeg must not be looked up"))
+    monkeypatch.setattr(ffmpegtools, "ffmpeg_exe", lambda: pytest.fail("ffmpeg must not be looked up"))
     clip = tone(1.0)
     assert voice_mod.process_clip(clip, {}) is clip
     assert voice_mod.process_clip(clip, {"speed": 1.0, "trim": False}) is clip
@@ -89,13 +90,13 @@ def test_speed_125_shortens_clip_by_about_20_percent():
 
 
 def test_speed_without_ffmpeg_fails_clearly(monkeypatch):
-    monkeypatch.setattr(render_mod, "ffmpeg_exe", lambda: None)
+    monkeypatch.setattr(ffmpegtools, "ffmpeg_exe", lambda: None)
     with pytest.raises(voice_mod.VoiceError, match="voiceover.speed needs ffmpeg"):
         voice_mod.process_clip(tone(0.5), {"speed": 1.1})
 
 
 def test_trim_alone_needs_no_ffmpeg(monkeypatch):
-    monkeypatch.setattr(render_mod, "ffmpeg_exe", lambda: pytest.fail("ffmpeg must not be looked up"))
+    monkeypatch.setattr(ffmpegtools, "ffmpeg_exe", lambda: pytest.fail("ffmpeg must not be looked up"))
     assert secs(voice_mod.process_clip(np.concatenate([quiet(1), tone(0.5)]), {"trim": True})) < 0.7
 
 

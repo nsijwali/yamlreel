@@ -1,9 +1,10 @@
 """Timeline assembly and ffmpeg encoding."""
 from __future__ import annotations
 
+import contextlib
 import math
 import re
-import shutil
+import shutil  # noqa: F401  (tests patch render.shutil.which; ffmpeg discovery lives in ffmpegtools)
 import subprocess
 import tempfile
 import time
@@ -23,7 +24,10 @@ from . import voice as voice_mod
 from .badge import Badge, make_badge, step_plan
 from .browserlife import closing_browsers
 from .config import HARD_LIMITS
+from .ffmpegtools import AUDIO_FORMATS, ffmpeg_exe  # noqa: F401  (both re-exported: render.ffmpeg_exe is a test seam)
 from .publish import PublishError, Staging
+from .renderplan import RenderError, RenderPlan, only_label, plan_durations, scene_windows  # noqa: F401  (re-exported)
+from . import renderplan
 from .safety import UnsafeInput, resolve_local
 from .scenes import Ctx, Scene, build_scene, make_caption
 from .shots import CaptureError
@@ -46,10 +50,6 @@ FRAME_QUEUE = proclife.FRAME_QUEUE  # frames waiting for ffmpeg at most (about 2
 MAX_WATERMARK_PIXELS = 16_000_000  # a watermark image larger than this is refused
 
 
-class RenderError(RuntimeError):
-    pass
-
-
 @dataclass
 class Runtime:
     """What this run is allowed to read and reach (never taken from the spec)."""
@@ -62,29 +62,6 @@ class Runtime:
     @classmethod
     def for_spec(cls, spec: dict[str, Any]) -> "Runtime":
         return cls(roots=[Path(spec.get("_dir", "."))])
-
-
-def plan_durations(spec: dict[str, Any], floors: dict[int, float] | None = None) -> list[float]:
-    """The one place scene lengths are decided. `floors` maps a scene index to the shortest length it may have
-    (narrated scenes: speech plus gap).
-
-    Beat snap on: a scene is rounded to the nearest whole beat (at least one beat), and a scene that would then be
-    shorter than its floor is rounded up to the next beat, so speech is never cut. Snap off: max(length, floor)."""
-    floors = floors or {}
-    music = spec["music"]
-    beat = 60.0 / float(music["bpm"]) if music.get("snap") and music.get("bpm") else None
-    out: list[float] = []
-    for i, sc in enumerate(spec["scenes"]):
-        s = float(sc["seconds"])
-        floor = floors.get(i, 0.0)
-        if beat is None:
-            d = max(s, floor)
-        else:
-            d = max(beat, round(s / beat) * beat)
-            if d < floor:
-                d = math.ceil(floor / beat - 1e-9) * beat
-        out.append(d)
-    return out
 
 
 def slugify(text: str) -> str:
@@ -358,22 +335,6 @@ def contact_sheet(tl: Timeline, path: Path, cols: int | None = None, tile_w: int
     return path
 
 
-def scene_windows(only: list[int]) -> list[tuple[int, int]]:
-    """Runs of consecutive scene numbers in `only` (sorted, unique) as (first, last) pairs: [1, 2, 3, 5] -> [(1, 3), (5, 5)]."""
-    out: list[tuple[int, int]] = []
-    for i in only:
-        if out and out[-1][1] == i - 1:
-            out[-1] = (out[-1][0], i)
-        else:
-            out.append((i, i))
-    return out
-
-
-def only_label(windows: list[tuple[int, int]]) -> str:
-    """The file-name part for a set of windows: '2-4', '1_5', '0-1_3'."""
-    return "_".join(str(a) if a == b else f"{a}-{b}" for a, b in windows)
-
-
 def _check_only(only: list[int], n_scenes: int) -> None:
     if not only or only != sorted(set(only)):
         raise RenderError("only: scene numbers must be a non-empty, sorted list without duplicates")
@@ -509,30 +470,66 @@ def share_copy(spec: dict[str, Any], total: float, fmt_list: list[str]) -> tuple
     return f"Title: {title}\n\nDescription:\n{desc}\n", warns
 
 
-AUDIO_FORMATS = "wav,mp3,ogg,flac,mov,aac,matroska,webm"
+def make_plan(spec: dict[str, Any], fps: int, out_dir: Path, runtime: Runtime | None = None, n_formats: int = 1,
+              only: list[int] | None = None, music_override: str | None = None) -> RenderPlan:
+    """The format-independent part of a render (narration, timing, limits), to pass to render() for each format.
+    Close it (or use it in a `with`) when every format is done."""
+    rt = runtime or Runtime.for_spec(spec)
+    if not 1 <= fps <= 60:
+        raise RenderError("fps must be between 1 and 60")
+    if only is not None:
+        _check_only(only, len(spec["scenes"]))
+    return renderplan.build(spec, fps=fps, n_formats=n_formats, only=only, music_override=music_override,
+                            voice=rt.voice, roots=rt.roots, cache=out_dir / ".cache",
+                            durations_fn=plan_durations)   # render's global, so replacing it still takes effect
 
 
-def ffmpeg_exe() -> str | None:
-    """ffmpeg on PATH, else the static build from the optional imageio-ffmpeg package (`pip install imageio-ffmpeg`,
-    or the `ffmpeg` extra), which works where no system package is available."""
-    path = shutil.which("ffmpeg")
-    if path:
-        return path
-    try:
-        import imageio_ffmpeg
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except (ImportError, RuntimeError):
-        return None
+def _audio_tracks(plan: RenderPlan, tl: Timeline, rt: Runtime, ffmpeg: str,
+                  durations: list[float]) -> renderplan.AudioTracks:
+    """The encoder's audio inputs for this plan, made the first time a format asks and reused by the others (their
+    scene starts are the same; a timeline with other starts gets its own)."""
+    key = (tuple(tl.starts), tl.total)
+    if plan.audio is not None and plan.audio.key == key:
+        return plan.audio
+    spec, clips, total, work, fps = plan.spec, plan.clips, tl.total, plan.workdir, plan.fps
+    warnings: list[str] = []
+    narration = voice_mod.write_wav(work / "narration.wav", voice_mod.build_track(clips, tl.starts, total)) if clips else None
+    duck = None
+    if clips and (spec.get("voiceover") or {}).get("duck"):
+        duck = (speech_regions(clips, tl.starts), float(spec["voiceover"].get("music_level", 0.35)))
+    audio = _prepare_audio(spec, total, work, plan.music_override, rt, energy_sections(spec, tl.starts, durations),
+                           duck, ffmpeg)
+    mix_numbers = None
+    cues = scene_cues(spec, tl.starts, fps, durations, warnings.append) if spec.get("mix") is not None else []
+    if spec.get("mix") is not None and (audio or narration or cues):
+        # the `mix:` path: narration, music and scene effects become one mastered track (see mixdown.py)
+        from . import mixdown
+        if audio is not None and audio.parent != work:
+            # a music file the spec named (no ducking made a copy of it): decode it to the mix's mono 44.1 kHz WAV
+            audio = _decode_music(ffmpeg, audio, work / "music-src.wav")
+        level = 1.0 if duck or not narration else float(spec["voiceover"].get("music_level", 0.35))
+        try:
+            audio, mix_numbers = mixdown.master(work, ffmpeg, total, narration, audio, cues,
+                                                spec["mix"], float(spec["music"].get("volume", 0.9)), level,
+                                                int(spec["music"].get("seed", 0) or 0), timeout=rt.deadlines.subprocess)
+        except mixdown.MixError as e:
+            raise RenderError(f"mix: {e}") from e
+        narration = None
+    plan.audio = renderplan.AudioTracks(key, audio, narration, duck, mix_numbers, warnings)
+    return plan.audio
 
 
 def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: float = 1.0,
            music_override: str | None = None, contact: bool = True,
            runtime: Runtime | None = None, n_formats: int = 1,
-           contact_frames: int | None = None, only: list[int] | None = None) -> dict[str, Any]:
+           contact_frames: int | None = None, only: list[int] | None = None,
+           plan: RenderPlan | None = None) -> dict[str, Any]:
     """Render one format. `n_formats` is how many formats this run renders in all, for the frame budget.
     `contact_frames` sets how many stills per scene the contact sheet has (default: two). `only` (sorted, unique
     scene numbers) renders just those scenes, cut out of the full video: same plan, partial frames; the outputs get
-    `-scenes-<label>` names and no poster is written."""
+    `-scenes-<label>` names and no poster is written. `plan` (from `make_plan`, made for the same fps, `only` and
+    music override) lets several formats share one narration pass and one set of audio tracks; without it render
+    makes its own and removes it at the end."""
     clock = time.perf_counter
     t_start = clock()
     ffmpeg = ffmpeg_exe()
@@ -544,53 +541,29 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
     if only is not None:
         _check_only(only, len(spec["scenes"]))
     rt = runtime or Runtime.for_spec(spec)
-    spec = {**spec, "scenes": [dict(sc) for sc in spec["scenes"]]}  # narration stretches scene lengths: work on a copy
-    if music_override in music_mod.STYLE_DEFAULTS or music_override == "none":
-        spec["music"] = music_mod.with_style(spec["music"], music_override)  # before beat snapping reads the bpm
     out = out_dir / fmt
     out.mkdir(parents=True, exist_ok=True)
+    cache = out_dir / ".cache"
+    cache.mkdir(parents=True, exist_ok=True)
     # Outputs are written into a staging folder and replace the previous ones only once everything succeeded.
     # The browser that draws line-art frames is closed when this render ends, however it ends (closing_browsers).
-    with tempfile.TemporaryDirectory(prefix="yamlreel-") as td, Staging(out) as stage, closing_browsers():
-        work = Path(td)
-        cache = out_dir / ".cache"
-        cache.mkdir(parents=True, exist_ok=True)
-        # The spec limits were checked on load; check again as narration stretches the scenes (prepare_narration
-        # stops loading clips once they alone pass the limit) and after beat snapping has rounded them, and in case
-        # the caller never validated. Absolute limits always apply.
-        limits = spec.get("limits") or {}
-        limit = min(limits.get("max_seconds", HARD_LIMITS["max_seconds"]), HARD_LIMITS["max_seconds"])
-        try:
-            clips = voice_mod.prepare_narration(spec, rt.voice, cache, lambda p: resolve_local(p, Path(spec.get("_dir", ".")), rt.roots),
-                                                max_seconds=limit)
-        except (voice_mod.VoiceError, UnsafeInput) as e:
-            raise RenderError(f"voiceover: {e}") from e
-        t_voice = clock()
-        try:
-            words, sub_warnings = subs_mod.scene_words(
-                spec, clips, lambda p: resolve_local(p, Path(spec.get("_dir", ".")), rt.roots))
-        except (subs_mod.SubtitleError, UnsafeInput) as e:
-            raise RenderError(f"subtitles: {e}") from e
-        durations = plan_durations(spec, subs_mod.raise_floors(spec, words, voice_mod.scene_floors(spec, clips)))
-        total_seconds = sum(durations)
-        if total_seconds > limit:
-            raise RenderError(f"after narration and beat snapping the video is {total_seconds:.1f}s; "
-                              f"the limit is {limit:g}s (limits.max_seconds)")
-        starts_plan = [sum(durations[:k]) for k in range(len(durations))]
-        windows = scene_windows(only) if only is not None else []
-        spans = [(starts_plan[a], starts_plan[b] + durations[b]) for a, b in windows]   # seconds in the full video
-        try:
-            check_frame_budget(sum(b - a for a, b in spans) if only is not None else total_seconds, fps, n_formats)
-        except SpecError as e:
-            raise RenderError(str(e)) from e
+    with contextlib.ExitStack() as stack:
+        if plan is None:
+            plan = stack.enter_context(make_plan(spec, fps, out_dir, rt, n_formats, only, music_override))
+        elif not plan.matches(fps, only, music_override):
+            raise RenderError("render: the plan was made for another fps, --only or music override")
+        t_voice = clock()   # a plan made elsewhere did its narration and timing before this render started
+        work = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="yamlreel-")))
+        stage = stack.enter_context(Staging(out))
+        stack.enter_context(closing_browsers())
+        spec, clips, words, durations, windows, spans = (plan.spec, plan.clips, plan.words, plan.durations,
+                                                         plan.windows, plan.spans)
         tl = Timeline(spec, fmt, cache, scale, rt, durations=durations, words=words)
-        tl.ctx.warnings.extend(w for w in sub_warnings if w not in tl.ctx.warnings)
+        tl.ctx.warnings.extend(w for w in plan.sub_warnings if w not in tl.ctx.warnings)
         total = tl.total
-        tag = f"-scenes-{only_label(windows)}" if only is not None else ""
+        tag = plan.tag
         tl.cut_in = {a for a, _ in windows}
-        # Frames of each window: the full video's indices ceil(a*fps) .. ceil(b*fps)-1; a full render is one window.
-        frame_runs = ([(math.ceil(a * fps), min(math.ceil(b * fps), int(round(total * fps)))) for a, b in spans] if only is not None
-                      else [(0, int(round(total * fps)))])
+        frame_runs = renderplan.frame_runs(plan, total)
         n_frames = sum(n1 - n0 for n0, n1 in frame_runs)
         out_seconds = n_frames / fps if only is not None else total
         srt = None
@@ -604,28 +577,9 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
                 srt.write_text(subs_mod.srt_text(cues, bool(spec["subtitles"].get("uppercase"))), encoding="utf-8")
         if srt is None:
             stage.remove(srt_name)   # a file from an earlier run would be taken for this one's (deleted on publish)
-        narration = voice_mod.write_wav(work / "narration.wav", voice_mod.build_track(clips, tl.starts, total)) if clips else None
-        duck = None
-        if clips and (spec.get("voiceover") or {}).get("duck"):
-            duck = (speech_regions(clips, tl.starts), float(spec["voiceover"].get("music_level", 0.35)))
-        audio = _prepare_audio(spec, total, work, music_override, rt, energy_sections(spec, tl.starts, durations),
-                               duck, ffmpeg)
-        mix_numbers = None
-        cues = scene_cues(spec, tl.starts, fps, durations, tl.ctx.warn) if spec.get("mix") is not None else []
-        if spec.get("mix") is not None and (audio or narration or cues):
-            # the `mix:` path: narration, music and scene effects become one mastered track (see mixdown.py)
-            from . import mixdown
-            if audio is not None and audio.parent != work:
-                # a music file the spec named (no ducking made a copy of it): decode it to the mix's mono 44.1 kHz WAV
-                audio = _decode_music(ffmpeg, audio, work / "music-src.wav")
-            level = 1.0 if duck or not narration else float(spec["voiceover"].get("music_level", 0.35))
-            try:
-                audio, mix_numbers = mixdown.master(work, ffmpeg, total, narration, audio, cues,
-                                                    spec["mix"], float(spec["music"].get("volume", 0.9)), level,
-                                                    int(spec["music"].get("seed", 0) or 0), timeout=rt.deadlines.subprocess)
-            except mixdown.MixError as e:
-                raise RenderError(f"mix: {e}") from e
-            narration = None
+        tracks = _audio_tracks(plan, tl, rt, ffmpeg, durations)   # made once per plan, shared by its formats
+        tl.ctx.warnings.extend(w for w in tracks.warnings if w not in tl.ctx.warnings)
+        audio, narration, duck, mix_numbers = tracks.audio, tracks.narration, tracks.duck, tracks.mix
         poster = tl.frame_at(tl.poster_time())   # also checks poster.scene
         if only is None:
             poster.convert("RGB").save(stage.path("poster.jpg"), quality=92)
