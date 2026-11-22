@@ -32,6 +32,7 @@ from . import anim
 from . import motion_scene as motion
 from .textkit import MAX_COUNT_MAGNITUDE, split_count
 from .theme import get_theme
+from .narration_lead import MAX_LEAD
 from .voice import MAX_SPEED, MIN_SPEED
 from .yamlpos import LocatedError, has_path, leading_path
 
@@ -1722,7 +1723,7 @@ def _watermark(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, 
 def _voiceover(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, Any]:
     v = v or {}
     vo = dict(_mapping(path, v))
-    _no_unknown(path, vo, ("voice", "language", "gap", "music_level", "read_screen", "duck", "speed", "trim", "debreath"), "voiceover")
+    _no_unknown(path, vo, ("voice", "language", "gap", "lead", "music_level", "read_screen", "duck", "speed", "trim", "debreath"), "voiceover")
     for k in ("voice", "language"):
         if k in vo and (not isinstance(vo[k], str) or not vo[k].strip() or len(vo[k]) > 200):
             raise SpecError(f"{path}.{k} must be a short string")
@@ -1731,7 +1732,7 @@ def _voiceover(path: str, v: Any, spec: dict[str, Any], env: _Env) -> dict[str, 
             _bool(f"{path}.{k}", vo[k])
     if "speed" in vo:
         vo["speed"] = _number(f"{path}.speed", vo["speed"], MIN_SPEED, MAX_SPEED)
-    for k, hi in (("gap", 10), ("music_level", 1)):
+    for k, hi in (("gap", 10), ("music_level", 1), ("lead", MAX_LEAD)):
         if k in vo:
             vo[k] = _number(f"{path}.{k}", vo[k], 0, hi)
     return vo
