@@ -469,11 +469,13 @@ scenes:
   `sfx_db` (-24 to 12 dB, default 0), `voice_chain` (default true). `render` prints the loudness and true peak before
   and after mastering. Silence is left silent.
 - **Cues:** `at` (required, seconds from the scene start, on a frame), `sound` (required), `gain` (0 to 2, default 1),
-  `pitch` (-24 to 24 semitones), `seconds` (only for `riser`, `whoosh`, `swell` and `hush`, 0.05 to 10).
+  `pitch` (-24 to 24 semitones), `seconds` (only for `riser`, `whoosh`, `swell`, `scribble` and `hush`, 0.05 to 10).
 - **Sounds:** `click` (a label lands), `pop` (a card lands), `tick` (a counter steps), `thud` (something goes down),
   `riser` and `hit` (tension and payoff), `ding` (a token is spent), `drip` (a refill), `whoosh` (a scene change or a
   camera push), `swell` (a slow fill), `stinger` (a closing question), `deny` (a refused request) and `hush` (no
-  sound: the music drops out). All are synthesised, so there is nothing to license. Give each sound one meaning.
+  sound: the music drops out). Foley: `creak` (wood under load), `spark` (an electric crackle), `scribble` (a pen
+  writing), `shutter` (a camera flash), `zip` (something shoots past) and `chime` (a calm payoff). All are
+  synthesised, so there is nothing to license. Give each sound one meaning.
 - **Limits:** at most 40 cues per scene and 400 per spec (`MAX_CUES`); `sfx` without `mix:` is an error; a cue at or
   past its scene's length is dropped with a warning; the mix path takes videos of at most 600 s (`MAX_MIX_SECONDS`).
 - **Music files** in `music.style` are decoded to mono 44.1 kHz first, so MP3s and 48 kHz or 24-bit WAVs work.

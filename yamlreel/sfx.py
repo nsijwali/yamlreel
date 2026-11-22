@@ -10,6 +10,8 @@ Each sound has one job, so a viewer learns what it means:
     stinger  the closing question (chord + bell)         deny     a request is refused (short falling buzz)
     hush     not a sound: the music drops out for `seconds` (a near-silence before a key moment)
 
+Foley sounds from sfx_foley.py: creak, spark, scribble (takes `seconds`), shutter, zip, chime.
+
 `cue_track` places cues at exact sample positions and adds a small room reverb to the bus. Everything is pure and
 seeded, so a spec renders the same audio every time. Nothing in the classic render path imports this module.
 """
@@ -19,7 +21,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from . import synth
+from . import sfx_foley, synth
 
 SR = synth.SR
 TWO_PI = 2.0 * np.pi
@@ -196,6 +198,16 @@ def deny(rng: np.random.Generator, pitch: float) -> np.ndarray:
 _MAKERS = {"click": click, "pop": pop, "tick": tick, "thud": thud, "hit": hit, "ding": ding, "drip": drip,
            "stinger": stinger, "deny": deny}
 _TIMED = {"riser": riser, "whoosh": whoosh, "swell": swell}
+
+# Foley sounds (creak, spark, scribble, shutter, zip, chime) live in sfx_foley.py. They go after "hush" so the seed
+# index of every older sound, and therefore its audio, stays the same.
+if sfx_foley.SR != SR:
+    raise RuntimeError(f"sfx_foley.SR {sfx_foley.SR} differs from synth.SR {SR}")
+SOUNDS = SOUNDS + sfx_foley.NAMES
+LEVELS.update(sfx_foley.LEVELS)
+DEFAULT_SECONDS.update(sfx_foley.DEFAULT_SECONDS)
+_MAKERS.update(sfx_foley.MAKERS)
+_TIMED.update(sfx_foley.TIMED)
 
 
 def render_sound(sound: str, seed: int = 0, pitch: float = 0.0, seconds: float | None = None) -> np.ndarray:
