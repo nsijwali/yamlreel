@@ -492,10 +492,10 @@ def raise_floors(spec: dict[str, Any], words: dict[int, SceneWords], floors: dic
     return out
 
 
-def caption_start(sw: SceneWords, cues: list[Cue] | None = None) -> float:
+def caption_start(sw: SceneWords, cues: list[Cue] | None = None, lead: float = voice.NARRATION_LEAD) -> float:
     """Scene-local time a subtitled scene's caption pill may appear: CAPTION_GAP after both the speech and the
     last subtitle cue, so it is never drawn over a caption that is still on screen."""
-    done = voice.NARRATION_LEAD + sw.clip_seconds
+    done = lead + sw.clip_seconds
     if cues:
         done = max(done, cues[-1].end)
     return done + CAPTION_GAP

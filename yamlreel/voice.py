@@ -26,6 +26,7 @@ import numpy as np
 
 from . import ffmpegtools, proclife
 from .atomicfile import write_validated
+from .narration_lead import DEFAULT_LEAD, narration_lead
 from .errorfmt import redact_text, redact_url
 from .voicewire import VoiceError, decode_audio, find_wav_b64 as _find_wav_b64, parse_json as _json, rpc_result  # noqa: F401  (VoiceError is re-exported)
 
@@ -35,7 +36,7 @@ MAX_RESPONSE_BYTES = 200 * 1024 * 1024
 DEFAULT_URL = "http://127.0.0.1:3900/mcp/"
 LOADING_TRIES = 5  # a 503 means VoiceStudio is up but its model is still loading
 LOADING_BACKOFF = 3.0  # seconds before the second try; each wait is 1.5x the one before
-NARRATION_LEAD = 0.3  # seconds of silence between a scene's start and its narration
+NARRATION_LEAD = DEFAULT_LEAD  # seconds of silence between a scene's start and its narration (`voiceover.lead`)
 MIN_SPEED, MAX_SPEED = 0.8, 1.3  # voiceover.speed
 TRIM_FRAME = 0.02  # seconds per frame when looking for silence
 TRIM_DB = 40.0  # quiet means this far under the clip's own loudest frame
@@ -400,15 +401,16 @@ def cached_clip_path(cache: Path, server: VoiceServer, text: str, vo: dict[str, 
     return cache / f"narration-v{CACHE_KEY_VERSION}-{key}.wav"
 
 
-def min_scene_seconds(samples: np.ndarray, gap: float) -> float:
+def min_scene_seconds(samples: np.ndarray, gap: float, lead: float = NARRATION_LEAD) -> float:
     """The shortest scene that holds this clip: the speech, then the larger of the gap and the lead."""
-    return len(samples) / SAMPLE_RATE + max(gap, NARRATION_LEAD)
+    return len(samples) / SAMPLE_RATE + max(gap, lead)
 
 
 def scene_floors(spec: dict[str, Any], clips: dict[int, np.ndarray]) -> dict[int, float]:
     """{scene index: shortest allowed length} for every narrated scene."""
     gap = float((spec.get("voiceover") or {}).get("gap", 0.5))
-    return {i: min_scene_seconds(c, gap) for i, c in clips.items()}
+    lead = narration_lead(spec)
+    return {i: min_scene_seconds(c, gap, lead) for i, c in clips.items()}
 
 
 def prepare_narration(spec: dict[str, Any], server: VoiceServer | None, cache: Path,
@@ -419,6 +421,7 @@ def prepare_narration(spec: dict[str, Any], server: VoiceServer | None, cache: P
     narration is checked as it grows: once the clips so far need more than that, the rest is not loaded."""
     vo = spec.get("voiceover") or {}
     gap = float(vo.get("gap", 0.5))
+    lead = narration_lead(spec)
     clips: dict[int, np.ndarray] = {}
     spoken = 0.0   # seconds the narrated scenes so far need at least
     session: _Session | None = None
@@ -450,8 +453,8 @@ def prepare_narration(spec: dict[str, Any], server: VoiceServer | None, cache: P
             continue
         samples = process_clip(samples, vo)  # after the cache, so the cached audio stays raw
         clips[i] = samples
-        sc["seconds"] = max(sc["seconds"], min_scene_seconds(samples, gap))
-        spoken += min_scene_seconds(samples, gap)   # a lower bound on the video: snapping never cuts speech
+        sc["seconds"] = max(sc["seconds"], min_scene_seconds(samples, gap, lead))
+        spoken += min_scene_seconds(samples, gap, lead)   # a lower bound on the video: snapping never cuts speech
         last = i
     return clips
 

@@ -25,6 +25,7 @@ from .badge import Badge, make_badge, step_plan
 from .browserlife import closing_browsers
 from .config import HARD_LIMITS
 from .ffmpegtools import AUDIO_FORMATS, ffmpeg_exe  # noqa: F401  (both re-exported: render.ffmpeg_exe is a test seam)
+from .narration_lead import narration_lead
 from .publish import PublishError, Staging
 from .renderplan import RenderError, RenderPlan, only_label, plan_durations, scene_windows  # noqa: F401  (re-exported)
 from . import renderplan
@@ -119,10 +120,10 @@ class Timeline:
             if cfg is None:
                 continue
             cues = subs_mod.build_cues(list(sw.words), int(cfg["words"]), cfg["keywords"], bool(cfg["numbers"]),
-                                       limit=self.scenes[i].duration)
+                                       lead=narration_lead(spec), limit=self.scenes[i].duration)
             self._subs[i] = subs_mod.SubtitleTrack(self.ctx, cues, cfg)
             if i in self._caps:
-                self._cap_from[i] = subs_mod.caption_start(sw, cues)
+                self._cap_from[i] = subs_mod.caption_start(sw, cues, narration_lead(spec))
         if self._cap_from:
             ids = sorted(self._cap_from)
             self.ctx.warn(f"scene{'s' if len(ids) != 1 else ''} {', '.join(map(str, ids[:8]))}{', ...' if len(ids) > 8 else ''}: "
@@ -392,9 +393,10 @@ def scene_cues(spec: dict[str, Any], starts: list[float], fps: int, durations: l
     return out
 
 
-def speech_regions(clips: dict[int, np.ndarray], starts: list[float]) -> list[tuple[float, float]]:
+def speech_regions(clips: dict[int, np.ndarray], starts: list[float],
+                   lead: float = voice_mod.NARRATION_LEAD) -> list[tuple[float, float]]:
     """Where each narration clip is heard, as placed by `voice_mod.build_track`."""
-    return [(starts[i] + voice_mod.NARRATION_LEAD, starts[i] + voice_mod.NARRATION_LEAD + len(c) / voice_mod.SAMPLE_RATE)
+    return [(starts[i] + lead, starts[i] + lead + len(c) / voice_mod.SAMPLE_RATE)
             for i, c in clips.items()]
 
 
@@ -493,10 +495,10 @@ def _audio_tracks(plan: RenderPlan, tl: Timeline, rt: Runtime, ffmpeg: str,
         return plan.audio
     spec, clips, total, work, fps = plan.spec, plan.clips, tl.total, plan.workdir, plan.fps
     warnings: list[str] = []
-    narration = voice_mod.write_wav(work / "narration.wav", voice_mod.build_track(clips, tl.starts, total)) if clips else None
+    narration = voice_mod.write_wav(work / "narration.wav", voice_mod.build_track(clips, tl.starts, total, narration_lead(spec))) if clips else None
     duck = None
     if clips and (spec.get("voiceover") or {}).get("duck"):
-        duck = (speech_regions(clips, tl.starts), float(spec["voiceover"].get("music_level", 0.35)))
+        duck = (speech_regions(clips, tl.starts, narration_lead(spec)), float(spec["voiceover"].get("music_level", 0.35)))
     audio = _prepare_audio(spec, total, work, plan.music_override, rt, energy_sections(spec, tl.starts, durations),
                            duck, ffmpeg)
     mix_numbers = None
@@ -623,7 +625,7 @@ def render(spec: dict[str, Any], fmt: str, out_dir: Path, fps: int = 30, scale: 
                     cmd += ["-af", music_f.format(vol=vol)]
             else:
                 # Narration only: never fade the speech; just a tiny fade after it to avoid a click at the end.
-                speech_end = max((tl.starts[i] + voice_mod.NARRATION_LEAD + len(c) / voice_mod.SAMPLE_RATE
+                speech_end = max((tl.starts[i] + narration_lead(spec) + len(c) / voice_mod.SAMPLE_RATE
                                   for i, c in clips.items()), default=0.0)
                 end_fade = max(speech_end, total - 0.05)  # the fade starts after the last word, never inside it
                 fade = f"atrim=0:{total:.3f},asetpts=PTS-STARTPTS,afade=t=out:st={end_fade:.3f}:d=0.05"
