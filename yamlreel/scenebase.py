@@ -61,6 +61,8 @@ class Ctx:
             self.warnings.append(msg)
 
     def background(self) -> Image.Image:
+        if self._bg is None and self.theme.flat:
+            self._bg = Image.new("RGB", (self.W, self.H), self.theme.bg)   # solid colour, nothing else
         if self._bg is None and self.theme.bg2 is not None:
             self._bg = studio_background(self.theme, self.W, self.H)
         if self._bg is None:

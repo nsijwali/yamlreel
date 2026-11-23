@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PIL import ImageFont
 
+from . import ledger_theme
 from .errorfmt import describe_value, unknown_key
 
 Color = tuple[int, int, int]
@@ -29,6 +30,7 @@ class Theme:
     bg2: Color | None = None   # the background is a vertical gradient from `bg` (top) to `bg2` (bottom) with a vignette
     glow: Color | None = None  # a soft light pool behind the upper middle of the frame, in this colour
     faces: str | None = None   # a FACE_SETS name: the sans/mono fonts are drawn with these faces when installed
+    flat: bool = False         # the background is one solid `bg` colour: no vignette, no gradient (the `ledger` look)
 
 
 THEMES: dict[str, Theme] = {
@@ -49,6 +51,8 @@ THEMES: dict[str, Theme] = {
     "studio": Theme("studio", (12, 14, 30), (240, 243, 250), (139, 148, 178), (72, 214, 255),
                     (255, 77, 94), (24, 28, 52), (52, 60, 98), "sans", False,
                     bg2=(5, 6, 14), glow=(40, 52, 120), faces="avenir"),
+    # Flat drafting paper, near-black ink, one vermilion accent (colours and fonts: ledger_theme.py).
+    "ledger": Theme("ledger", **ledger_theme.COLORS, display="sans", frame=False, faces="ledger", flat=True),
 }
 
 # Font faces a theme can ask for: a logical font kind -> (file, index in a .ttc). A kind missing here, or a face that is
@@ -57,8 +61,9 @@ FACE_SETS: dict[str, dict[str, tuple[str, int]]] = {
     "avenir": {"sans": ("Avenir Next.ttc", 5), "sans_bold": ("Avenir Next.ttc", 0),
                "serif_bold": ("Avenir Next.ttc", 0), "serif": ("Avenir Next.ttc", 5),
                "mono": ("Menlo.ttc", 0), "mono_bold": ("Menlo.ttc", 1)},
+    "ledger": ledger_theme.FACE_SET,
 }
-_FACE_DIRS = ["/System/Library/Fonts", "/System/Library/Fonts/Supplemental", "/Library/Fonts"]
+_FACE_DIRS = ["/System/Library/Fonts", "/System/Library/Fonts/Supplemental", "/Library/Fonts", ledger_theme.FONT_DIR]
 _active_faces: dict[str, tuple[str, int]] = {}
 
 
@@ -158,7 +163,7 @@ def get_theme(name: str, custom: dict | None = None) -> Theme:
             if display not in ("serif", "sans"):
                 raise ValueError(f"themes.{n}.display must be serif or sans")
             return Theme(n, display=display, frame=bool(d.get("frame", base.frame)), bg2=base.bg2, glow=base.glow,
-                         faces=base.faces, **fields)
+                         faces=base.faces, flat=base.flat, **fields)
         if n in THEMES:
             return THEMES[n]
         raise ValueError(f"unknown theme {describe_value(n)}; choose from {', '.join([*THEMES, *custom])}")
