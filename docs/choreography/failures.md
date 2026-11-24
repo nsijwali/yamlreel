@@ -33,4 +33,5 @@
 - A path inside a `group` drew at the frame's corner: path points are frame fractions even in a group. Draw it as a top-level element or use a text child.
 - A long headline clipped at the frame edge during a camera push: keep pushed headlines to about 14 letters, or the push off that scene.
 - `pop` on every card made the payoff look like everything else: pop only the payoffs (rule 10).
-\n- The opening frames were a still diagram: the first second looked like a slide. Start a move at `at: 0` (a mover already travelling, a bar filling, tiles fading in) so frame 0 reads as live (rule 18).\n
+
+- The first second was a still frame and read as a slide: start a move or an entrance at `at: 0` (rule 18).
