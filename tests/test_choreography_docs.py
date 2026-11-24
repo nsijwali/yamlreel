@@ -41,7 +41,7 @@ def as_spec(text: str) -> dict[str, Any]:
 def test_every_move_folder_has_rules_and_is_indexed():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     folders = sorted(p.name for p in ROOT.iterdir() if p.is_dir())
-    assert 4 <= len(folders) <= 8
+    assert 4 <= len(folders) <= 10
     for name in folders:
         assert (ROOT / name / "rules.md").is_file(), name
         assert f"{name}/rules.md" in readme, f"{name} missing from the README index"

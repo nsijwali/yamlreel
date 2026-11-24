@@ -24,3 +24,14 @@
 - "read-heavy" was spoken as "red heavy": reword homographs ("heavy on reads"); the retake check catches it.
 - A frame-check sheet for a landscape spec drew vertical guides and rendered as vertical: framecheck now takes the spec's format.
 - voicedeliver key lines and beat numbers were hard-coded for one Short: use a `<spec>.delivery.json` sidecar.
+- `easing: in` failed validation: the easings are `linear`, `out`, `in_out` and `back`. Use `in_out`.
+- A ghost outline entered on one word and moved on the next, 0.13 s later, so the move began before the entry ended: anchor the entry to the move (`at = move.at - 0.4`), not to an earlier word.
+- The mix failed with "operands could not be broadcast ... (N,) (N-1,)": the spec total was not a whole number of seconds. Pad the last scene (builders do it after every rebuild).
+- A line that opened with a spelled acronym lost its first sound ("G T A six's map" was heard as "PTS6's map"): open with a word ("In G T A six, the map ...") and keep possessives off acronyms.
+- "That's pop-in" was spoken as "Let's pop in", "feed" heard as "feet": reword ("That is pop-in", "Your phone") and run the voice pass again.
+- Captions showed Whisper's spellings ("3.", "Pre -Fetch", "pop -in"): add `out/<name>/caption-fixes.json`.
+- A path inside a `group` drew at the frame's corner: path points are frame fractions even in a group. Draw it as a top-level element or use a text child.
+- A long headline clipped at the frame edge during a camera push: keep pushed headlines to about 14 letters, or the push off that scene.
+- `pop` on every card made the payoff look like everything else: pop only the payoffs (rule 10).
+
+- The first second was a still frame and read as a slide: start a move or an entrance at `at: 0` (rule 18).
