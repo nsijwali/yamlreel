@@ -63,6 +63,10 @@ The motion that explains the idea is the point of the Short; everything around i
 17. **No flashing, no big zooms.** Camera zoom stays at 1.1 or less (a focus push may reach 1.35); a shake is three
     camera keys on one impact, never on text.
 
+18. **The opening is never static.** Something moves in the first frames: a car already driving, a packet in flight,
+    a bar filling, tiles fading up. Frame 0 shows the hook and the first move is already under way (`at: 0`, a
+    `moves` entry starting at 0 or a 0.1 s `fade`), so the viewer reads the video as live before the voice starts.
+
 ## Building a Short from word times
 Hand-placed `at` values drift as soon as the voice changes, so the spec is generated:
 1. **Script first** (`shorts/<date>-<topic>-script.txt`): beats as input -> action -> result, one spoken line each.
