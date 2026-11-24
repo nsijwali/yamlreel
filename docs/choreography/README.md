@@ -63,9 +63,10 @@ The motion that explains the idea is the point of the Short; everything around i
 17. **No flashing, no big zooms.** Camera zoom stays at 1.1 or less (a focus push may reach 1.35); a shake is three
     camera keys on one impact, never on text.
 
-18. **The opening is never static.** Something moves in the first frames: a car already driving, a packet in flight,
-    a bar filling, tiles fading up. Frame 0 shows the hook and the first move is already under way (`at: 0`, a
-    `moves` entry starting at 0 or a 0.1 s `fade`), so the viewer reads the video as live before the voice starts.
+18. **The opening is never static.** Motion starts in the first frames, not after the first sentence. Frame 0 shows
+    the hook, and at least one element is already changing (moving, filling, drawing, fading in) from `at: 0`, so the
+    video reads as live before the voice starts. If the opening scene is a still diagram, give its main element a
+    `moves` entry or a short entrance that begins at 0.
 
 ## Building a Short from word times
 Hand-placed `at` values drift as soon as the voice changes, so the spec is generated:
