@@ -7,7 +7,7 @@ pyyaml==6.0.3
 pytest==9.2.0
 pluggy==1.7.0
 iniconfig==2.3.1
-packaging==26.3
+packaging==26.4
 playwright==1.65.2
 greenlet==3.5.6
 pyee==14.0.0
